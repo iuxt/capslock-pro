@@ -126,7 +126,8 @@
                     ],
                     "to_if_alone": [
                         {
-                            "key_code": "caps_lock"
+                            "key_code": "caps_lock",
+                            "hold_down_milliseconds": 200
                         }
                     ],
                     "type": "basic"
