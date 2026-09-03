@@ -1,8 +1,9 @@
 -- CapsLock Pro: 把当前前台窗口移动到其他屏幕
--- 用法: osascript move-window-to-display.applescript [next|prev|1..9]
+-- 用法: osascript move-window-to-display.applescript [next|prev|1..9|fullscreen]
 --   next  移动到下一个屏幕 (默认)
 --   prev  移动到上一个屏幕
 --   1..9  移动到指定序号的屏幕
+--   fullscreen  切换当前窗口的原生全屏状态
 --
 -- 说明: 窗口移动时保持原尺寸；只有目标屏幕放不下时才等比缩小。
 --       最大化或原生全屏窗口会在移动完成后恢复原状态。
@@ -19,6 +20,33 @@ use scripting additions
 on run argv
     set arg to "next"
     if (count of argv) > 0 then set arg to item 1 of argv
+
+    if arg is "fullscreen" then
+        tell application "System Events"
+            set ap to first application process whose frontmost is true
+            set wl to every window of ap
+            set w to missing value
+            repeat with x in wl
+                try
+                    if (value of attribute "AXMain" of x) is true then
+                        set w to contents of x
+                        exit repeat
+                    end if
+                end try
+            end repeat
+            if w is missing value and (count of wl) > 0 then set w to item 1 of wl
+            if w is missing value then return
+
+            try
+                set isFullScreen to (value of attribute "AXFullScreen" of w) is true
+                set targetFullScreen to not isFullScreen
+                set value of attribute "AXFullScreen" of w to targetFullScreen
+            on error
+                beep
+            end try
+        end tell
+        return
+    end if
 
     -- 1. 收集各屏幕的可视区域, 并转换为 AX 坐标系 (左上为原点, y 轴向下)
     -- NSScreen.mainScreen 会跟随当前键盘焦点窗口改变，不能用它作为全局坐标基准。

@@ -11,6 +11,18 @@ karabiner://karabiner/assets/complex_modifications/import?url=https://raw.github
 
 更新后需要重新导入一次（先在 Complex Modifications 里 Remove 旧的规则，再点上面的链接导入）。
 
+也可以在仓库目录运行更新脚本，一次完成 Swift 编译和当前 Karabiner profile 的规则更新：
+
+```bash
+./macOS/update.sh
+```
+
+脚本会保留其他 Karabiner 规则，并将修改前的配置备份为
+`~/.config/karabiner/karabiner.json.capslock-pro.backup`。首次使用前请先启动一次
+Karabiner-Elements，让它生成配置文件。源码没有变化时脚本会保留现有可执行文件，避免
+反复覆盖导致 macOS 辅助功能授权失效；如需强制重新编译，可执行
+`./macOS/update.sh --force`。
+
 
 ## macOS 快捷键
 
@@ -19,6 +31,7 @@ karabiner://karabiner/assets/complex_modifications/import?url=https://raw.github
 | CapsLock + h / j / k / l | 左 / 下 / 上 / 右 |
 | CapsLock + u / i | 行首 / 行尾（Mac 风格） |
 | CapsLock + o | 在下方新起一行 |
+| CapsLock + f | 切换当前窗口的原生全屏状态 |
 | CapsLock + n | 把当前窗口移动到下一个屏幕 |
 | CapsLock + p | 把当前窗口移动到上一个屏幕 |
 | CapsLock + 1 / 2 / 3 | 把当前窗口移动到第 1 / 2 / 3 个屏幕 |
@@ -50,6 +63,9 @@ xcode-select --install
 # 移到指定屏幕，序号范围为 1 到 9
 ~/.local/bin/move-window-display 1
 ~/.local/bin/move-window-display 2
+
+# 切换当前窗口的原生全屏状态
+~/.local/bin/move-window-display fullscreen
 
 # 查看帮助
 ~/.local/bin/move-window-display --help

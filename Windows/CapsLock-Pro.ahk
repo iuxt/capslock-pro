@@ -83,12 +83,15 @@ CapsLock & d:: {
 ; bing搜索博客
 CapsLock & s:: Run "https://cn.bing.com/search?q=site:zahui.fan"
 
-CapsLock & f::  ; 按下 Ctrl+F 最大化当前激活窗口
+CapsLock & f::  ; 切换当前激活窗口的最大化状态
 {
     activeWindow := WinGetID("A")  ; 获取当前激活窗口的句柄
     if (activeWindow)  ; 如果成功获取到窗口句柄
     {
-        WinMaximize(activeWindow)  ; 最大化窗口
+        if (WinGetMinMax(activeWindow) = 1)
+            WinRestore(activeWindow)
+        else
+            WinMaximize(activeWindow)
     }
     else
     {

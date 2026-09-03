@@ -1,9 +1,10 @@
 // CapsLock Pro: 把当前前台窗口移动到其他屏幕 (Swift 版本)
 //
-// 用法: move-window-display [next|prev|1..9]
+// 用法: move-window-display [next|prev|1..9|fullscreen]
 //   next  移动到下一个屏幕 (默认)
 //   prev  移动到上一个屏幕
 //   1..9  移动到指定序号的屏幕
+//   fullscreen  切换当前窗口的原生全屏状态
 //
 // 编译: mkdir -p ~/.local/bin && swiftc -O move-window-display.swift -o ~/.local/bin/move-window-display
 // 权限: 系统设置 -> 隐私与安全性 -> 辅助功能, 允许 karabiner_grabber (或本程序)
@@ -185,10 +186,17 @@ func preferredWindow(in application: AXUIElement) -> AXUIElement? {
 
 func focusedWindow() -> AXUIElement? {
     let systemWide = AXUIElementCreateSystemWide()
-    guard let application = elementValue(
+    if let application = elementValue(
         copyAttribute(systemWide, kAXFocusedApplicationAttribute as String)
-    ) else { return nil }
-    return preferredWindow(in: application)
+    ), let window = preferredWindow(in: application) {
+        return window
+    }
+
+    // 从 Karabiner 的后台进程启动时，AXFocusedApplication 偶尔返回
+    // kAXErrorCannotComplete；使用 AppKit 查询前台应用作为回退。
+    guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
+    dbg("falling back to frontmost application pid=\(application.processIdentifier)")
+    return preferredWindow(in: AXUIElementCreateApplication(application.processIdentifier))
 }
 
 func focusedWindow(applicationPID: pid_t) -> AXUIElement? {
@@ -299,7 +307,12 @@ enum Destination {
     case index(Int)
 }
 
-let usage = "Usage: move-window-display [next|prev|1..9]"
+enum Command {
+    case move(Destination)
+    case toggleFullScreen
+}
+
+let usage = "Usage: move-window-display [next|prev|1..9|fullscreen]"
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 if arguments.first == "-h" || arguments.first == "--help" {
@@ -312,26 +325,63 @@ guard arguments.count <= 1 else {
     exit(2)
 }
 
-let destination: Destination
+let command: Command
 switch arguments.first ?? "next" {
 case "next":
-    destination = .next
+    command = .move(.next)
 case "prev":
-    destination = .previous
+    command = .move(.previous)
+case "fullscreen":
+    command = .toggleFullScreen
 case let value:
     guard let index = Int(value), (1...9).contains(index) else {
         writeStderr(usage)
         exit(2)
     }
-    destination = .index(index - 1)
+    command = .move(.index(index - 1))
 }
 
 // MARK: - Main
 
-guard AXIsProcessTrusted() else {
+let trustOptions = [
+    kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+] as CFDictionary
+guard AXIsProcessTrustedWithOptions(trustOptions) else {
     writeStderr("move-window-display: 缺少辅助功能权限")
     exit(1)
 }
+
+guard var window = focusedWindow() else {
+    writeStderr("move-window-display: 无法获取当前窗口")
+    NSSound.beep()
+    exit(1)
+}
+var focusedPID: pid_t = 0
+AXUIElementGetPid(window, &focusedPID)
+let windowTitle = stringValue(copyAttribute(window, kAXTitleAttribute as String)) ?? ""
+let windowRole = stringValue(copyAttribute(window, kAXRoleAttribute as String)) ?? ""
+dbg("got focused window pid=\(focusedPID) role=\(windowRole) title=\(windowTitle)")
+
+if case .toggleFullScreen = command {
+    guard let isFullScreen = boolValue(copyAttribute(window, "AXFullScreen")),
+          isAttributeSettable(window, "AXFullScreen") else {
+        writeStderr("move-window-display: 当前窗口不支持原生全屏")
+        NSSound.beep()
+        exit(1)
+    }
+
+    let targetState = !isFullScreen
+    dbg("setting full screen to \(targetState)")
+    guard setBoolean(window, "AXFullScreen", targetState) == .success,
+          waitForBoolean(window, "AXFullScreen", expected: targetState, timeoutMs: 2_500) else {
+        writeStderr("move-window-display: 无法切换全屏状态")
+        NSSound.beep()
+        exit(1)
+    }
+    exit(0)
+}
+
+guard case let .move(destination) = command else { exit(0) }
 
 let appKitScreens = NSScreen.screens
 guard let primaryScreen = appKitScreens.first, appKitScreens.count >= 2 else {
@@ -348,16 +398,6 @@ let screens = appKitScreens.map {
     )
 }
 dbg("screens=\(screens.map(\.visibleFrame))")
-
-guard var window = focusedWindow() else {
-    dbg("no focused window")
-    exit(0)
-}
-var focusedPID: pid_t = 0
-AXUIElementGetPid(window, &focusedPID)
-let windowTitle = stringValue(copyAttribute(window, kAXTitleAttribute as String)) ?? ""
-let windowRole = stringValue(copyAttribute(window, kAXRoleAttribute as String)) ?? ""
-dbg("got focused window pid=\(focusedPID) role=\(windowRole) title=\(windowTitle)")
 
 // 先在原始状态下确定当前和目标显示器。目标无效或未变化时，不触碰全屏状态。
 guard let initialPosition = pointValue(copyAttribute(window, kAXPositionAttribute as String)),
