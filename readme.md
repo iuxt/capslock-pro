@@ -93,4 +93,4 @@ Swift 版本见 `move-window-display.swift`，AppleScript 版本见 `move-window
 - 只会使用屏幕的可视区域，不会压到菜单栏和 Dock；
 - AppleScript 已内嵌在 `Karabiner-Elements.json` 里，导入即可用（修改脚本时需要同步两处）；
 - 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也加上 `osascript`）；
-- 原生全屏窗口会先退出全屏再尝试移动；如果应用或 macOS 拒绝移动，会响一声提示音。
+- Swift 版本遇到原生全屏窗口时，会自动退出全屏、移动到目标显示器，然后在目标显示器恢复全屏；如果应用或 macOS 拒绝切换，会响一声提示音。

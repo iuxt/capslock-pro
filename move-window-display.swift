@@ -151,20 +151,21 @@ func waitForPosition(_ element: AXUIElement, expected: CGPoint, timeoutMs: Int =
     }
 }
 
-func waitForFalse(_ element: AXUIElement, _ name: String, timeoutMs: Int) {
+func waitForBoolean(
+    _ element: AXUIElement,
+    _ name: String,
+    expected: Bool,
+    timeoutMs: Int
+) -> Bool {
     let start = Date()
-    while boolValue(copyAttribute(element, name)) == true {
-        if Int(Date().timeIntervalSince(start) * 1_000) >= timeoutMs { return }
+    while true {
+        if boolValue(copyAttribute(element, name)) == expected { return true }
+        if Int(Date().timeIntervalSince(start) * 1_000) >= timeoutMs { return false }
         usleep(25_000)
     }
 }
 
-func focusedWindow() -> AXUIElement? {
-    let systemWide = AXUIElementCreateSystemWide()
-    guard let application = elementValue(
-        copyAttribute(systemWide, kAXFocusedApplicationAttribute as String)
-    ) else { return nil }
-
+func preferredWindow(in application: AXUIElement) -> AXUIElement? {
     if let window = elementValue(copyAttribute(application, kAXFocusedWindowAttribute as String)) {
         return window
     }
@@ -180,6 +181,39 @@ func focusedWindow() -> AXUIElement? {
         if boolValue(copyAttribute(window, kAXMainAttribute as String)) == true { return window }
     }
     return firstWindow
+}
+
+func focusedWindow() -> AXUIElement? {
+    let systemWide = AXUIElementCreateSystemWide()
+    guard let application = elementValue(
+        copyAttribute(systemWide, kAXFocusedApplicationAttribute as String)
+    ) else { return nil }
+    return preferredWindow(in: application)
+}
+
+func focusedWindow(applicationPID: pid_t) -> AXUIElement? {
+    preferredWindow(in: AXUIElementCreateApplication(applicationPID))
+}
+
+func failMove(
+    _ message: String,
+    window: AXUIElement,
+    applicationPID: pid_t,
+    restoreFullScreen: Bool
+) -> Never {
+    writeStderr(message)
+
+    // 移动中途失败也尽量恢复调用前的全屏状态，避免把用户留在普通窗口。
+    if restoreFullScreen {
+        let candidate = focusedWindow(applicationPID: applicationPID) ?? window
+        if boolValue(copyAttribute(candidate, "AXFullScreen")) != true,
+           setBoolean(candidate, "AXFullScreen", true) == .success {
+            _ = waitForBoolean(candidate, "AXFullScreen", expected: true, timeoutMs: 2_500)
+        }
+    }
+
+    NSSound.beep()
+    exit(1)
 }
 
 // MARK: - Geometry
@@ -320,7 +354,7 @@ let screens = appKitScreens.map {
 }
 dbg("screens=\(screens.map(\.visibleFrame))")
 
-guard let window = focusedWindow() else {
+guard var window = focusedWindow() else {
     dbg("no focused window")
     exit(0)
 }
@@ -330,34 +364,18 @@ let windowTitle = stringValue(copyAttribute(window, kAXTitleAttribute as String)
 let windowRole = stringValue(copyAttribute(window, kAXRoleAttribute as String)) ?? ""
 dbg("got focused window pid=\(focusedPID) role=\(windowRole) title=\(windowTitle)")
 
-// 原生全屏和最大化状态会拦截位置/尺寸写入，先恢复为普通窗口。
-if boolValue(copyAttribute(window, "AXFullScreen")) == true {
-    dbg("leaving full screen")
-    if setBoolean(window, "AXFullScreen", false) == .success {
-        waitForFalse(window, "AXFullScreen", timeoutMs: 1_200)
-        // 属性会先变为 false，Space 切换动画随后才结束。
-        usleep(300_000)
-    }
-}
-if boolValue(copyAttribute(window, "AXZoomed")) == true {
-    dbg("unzooming window")
-    if setBoolean(window, "AXZoomed", false) == .success {
-        waitForFalse(window, "AXZoomed", timeoutMs: 500)
-    }
-}
-
-guard let originalPosition = pointValue(copyAttribute(window, kAXPositionAttribute as String)),
-      let originalSize = sizeValue(copyAttribute(window, kAXSizeAttribute as String)),
-      originalSize.width > 0, originalSize.height > 0 else {
+// 先在原始状态下确定当前和目标显示器。目标无效或未变化时，不触碰全屏状态。
+guard let initialPosition = pointValue(copyAttribute(window, kAXPositionAttribute as String)),
+      let initialSize = sizeValue(copyAttribute(window, kAXSizeAttribute as String)),
+      initialSize.width > 0, initialSize.height > 0 else {
     writeStderr("move-window-display: 无法读取当前窗口的位置或尺寸")
     exit(1)
 }
-
-let center = CGPoint(
-    x: originalPosition.x + originalSize.width / 2,
-    y: originalPosition.y + originalSize.height / 2
+let initialCenter = CGPoint(
+    x: initialPosition.x + initialSize.width / 2,
+    y: initialPosition.y + initialSize.height / 2
 )
-guard let currentIndex = screenIndex(containing: center, screens: screens) else { exit(0) }
+guard let currentIndex = screenIndex(containing: initialCenter, screens: screens) else { exit(0) }
 
 let targetIndex: Int
 switch destination {
@@ -373,6 +391,41 @@ case .index(let index):
     targetIndex = index
 }
 guard targetIndex != currentIndex else { exit(0) }
+
+// 原生全屏会拦截位置/尺寸写入：先退出，移动完成后在目标显示器恢复全屏。
+let wasFullScreen = boolValue(copyAttribute(window, "AXFullScreen")) == true
+if wasFullScreen {
+    dbg("leaving full screen")
+    guard setBoolean(window, "AXFullScreen", false) == .success,
+          waitForBoolean(window, "AXFullScreen", expected: false, timeoutMs: 2_500) else {
+        writeStderr("move-window-display: 无法退出全屏状态")
+        NSSound.beep()
+        exit(1)
+    }
+    // 属性会先变为 false，Space 切换动画随后才结束。
+    usleep(650_000)
+    // 某些应用会在退出全屏时替换 AXWindow 对象，需要重新获取。
+    if let refreshedWindow = focusedWindow(applicationPID: focusedPID) {
+        window = refreshedWindow
+    }
+}
+if boolValue(copyAttribute(window, "AXZoomed")) == true {
+    dbg("unzooming window")
+    if setBoolean(window, "AXZoomed", false) == .success {
+        _ = waitForBoolean(window, "AXZoomed", expected: false, timeoutMs: 500)
+    }
+}
+
+guard let originalPosition = pointValue(copyAttribute(window, kAXPositionAttribute as String)),
+      let originalSize = sizeValue(copyAttribute(window, kAXSizeAttribute as String)),
+      originalSize.width > 0, originalSize.height > 0 else {
+    failMove(
+        "move-window-display: 无法读取窗口的位置或尺寸",
+        window: window,
+        applicationPID: focusedPID,
+        restoreFullScreen: wasFullScreen
+    )
+}
 
 let source = screens[currentIndex].visibleFrame
 let target = screens[targetIndex].visibleFrame
@@ -395,9 +448,12 @@ dbg(
 )
 
 guard isAttributeSettable(window, kAXPositionAttribute as String) else {
-    writeStderr("move-window-display: 当前窗口不允许移动")
-    NSSound.beep()
-    exit(1)
+    failMove(
+        "move-window-display: 当前窗口不允许移动",
+        window: window,
+        applicationPID: focusedPID,
+        restoreFullScreen: wasFullScreen
+    )
 }
 
 // 先把窗口交给目标屏幕管理。若先在小屏上放大，macOS/应用会把尺寸限制在原屏幕内。
@@ -432,9 +488,12 @@ let finalOrigin = mappedOrigin(
 )
 setPoint(window, kAXPositionAttribute as String, finalOrigin)
 guard let actualPosition = waitForPosition(window, expected: finalOrigin) else {
-    writeStderr("move-window-display: 无法确认窗口移动结果")
-    NSSound.beep()
-    exit(1)
+    failMove(
+        "move-window-display: 无法确认窗口移动结果",
+        window: window,
+        applicationPID: focusedPID,
+        restoreFullScreen: wasFullScreen
+    )
 }
 dbg("final position \(finalOrigin) -> \(actualPosition)")
 
@@ -445,9 +504,45 @@ let finalCenter = CGPoint(
     y: actualPosition.y + verifiedSize.height / 2
 )
 if !screens[targetIndex].frame.contains(finalCenter) {
-    writeStderr("move-window-display: 窗口移动失败")
-    NSSound.beep()
-    exit(1)
+    failMove(
+        "move-window-display: 窗口移动失败",
+        window: window,
+        applicationPID: focusedPID,
+        restoreFullScreen: wasFullScreen
+    )
+}
+
+if wasFullScreen {
+    dbg("restoring full screen on display \(targetIndex + 1)")
+    guard setBoolean(window, "AXFullScreen", true) == .success,
+          waitForBoolean(window, "AXFullScreen", expected: true, timeoutMs: 2_500) else {
+        writeStderr("move-window-display: 窗口已移动，但无法恢复全屏状态")
+        NSSound.beep()
+        exit(1)
+    }
+
+    // 等待全屏 Space 的切换动画结束，再确认全屏窗口确实落在目标显示器。
+    usleep(650_000)
+    let fullScreenWindow = focusedWindow(applicationPID: focusedPID) ?? window
+    guard let fullScreenPosition = pointValue(
+        copyAttribute(fullScreenWindow, kAXPositionAttribute as String)
+    ), let fullScreenSize = sizeValue(
+        copyAttribute(fullScreenWindow, kAXSizeAttribute as String)
+    ) else {
+        writeStderr("move-window-display: 无法确认全屏窗口的位置")
+        NSSound.beep()
+        exit(1)
+    }
+    let fullScreenCenter = CGPoint(
+        x: fullScreenPosition.x + fullScreenSize.width / 2,
+        y: fullScreenPosition.y + fullScreenSize.height / 2
+    )
+    guard screens[targetIndex].frame.contains(fullScreenCenter) else {
+        writeStderr("move-window-display: 全屏窗口未进入目标显示器")
+        NSSound.beep()
+        exit(1)
+    }
+    dbg("full screen restored at \(fullScreenPosition) size=\(fullScreenSize)")
 }
 
 dbg("moved successfully")
