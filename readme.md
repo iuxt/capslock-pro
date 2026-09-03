@@ -29,7 +29,7 @@ karabiner://karabiner/assets/complex_modifications/import?url=https://raw.github
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-swiftc -O move-window-display.swift -o "$HOME/.local/bin/move-window-display"
+swiftc -O macOS/src/move-window-display.swift -o "$HOME/.local/bin/move-window-display"
 ```
 
 如果系统提示找不到 `swiftc`，先安装 Xcode Command Line Tools：
@@ -71,7 +71,7 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 
 ### 在 Karabiner-Elements 中调用 Swift 版本
 
-把对应规则的 `shell_command` 设置为以下命令：
+仓库提供的 `Karabiner-Elements.json` 默认调用编译后的 Swift 程序：
 
 ```text
 "$HOME/.local/bin/move-window-display" next
@@ -81,16 +81,16 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 "$HOME/.local/bin/move-window-display" 3
 ```
 
-当前仓库提供的 `Karabiner-Elements.json` 仍然内嵌 AppleScript，因此不安装 Swift 版本也能直接使用。要让快捷键使用 Swift 版本，需要修改 JSON 中相应的 `shell_command`，然后重新导入规则。
+导入规则前需要先完成上面的编译安装。更新 Swift 源码后，重新编译即可，无需再次导入规则。
 
 ### 跨屏行为
 
-Swift 版本见 `move-window-display.swift`，AppleScript 版本见 `move-window-to-display.applescript`。它们的主要行为如下：
+Swift 版本见 `macOS/src/move-window-display.swift`，旧的 AppleScript 版本见 `macOS/move-window-to-display.applescript`。它们的主要行为如下：
 
 - 跨屏时保持窗口原尺寸；只有目标屏幕放不下时才会等比缩小，不会主动放大小窗口；
 - 尽量保持窗口在屏幕中的相对位置，并自动校正到菜单栏和 Dock 之外的可视区域；
 - 最大化窗口移动后会恢复最大化，避免 iTerm2 等按字符网格调整尺寸的应用越移越小；
 - 只会使用屏幕的可视区域，不会压到菜单栏和 Dock；
-- AppleScript 已内嵌在 `Karabiner-Elements.json` 里，导入即可用（修改脚本时需要同步两处）；
-- 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也加上 `osascript`）；
+- Karabiner 规则调用 `~/.local/bin/move-window-display`，该文件需要由 Swift 源码预先编译；
+- 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也添加 `~/.local/bin/move-window-display`）；
 - Swift 版本遇到原生全屏窗口时，会自动退出全屏、移动到目标显示器，然后在目标显示器恢复全屏；如果应用或 macOS 拒绝切换，会响一声提示音。
