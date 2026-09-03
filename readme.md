@@ -7,7 +7,7 @@ macOS 参考 https://github.com/lianginx/capslock-yes
 
 macOS 导入， 浏览器打开：
 
-karabiner://karabiner/assets/complex_modifications/import?url=https://raw.githubusercontent.com/iuxt/capslock-pro/refs/heads/master/Karabiner-Elements.json
+karabiner://karabiner/assets/complex_modifications/import?url=https://raw.githubusercontent.com/iuxt/capslock-pro/refs/heads/master/macOS/Karabiner-Elements.json
 
 更新后需要重新导入一次（先在 Complex Modifications 里 Remove 旧的规则，再点上面的链接导入）。
 
