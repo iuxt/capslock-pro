@@ -87,9 +87,9 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 
 Swift 版本见 `move-window-display.swift`，AppleScript 版本见 `move-window-to-display.applescript`。它们的主要行为如下：
 
-- 屏幕分辨率不同也可以：按两个屏幕的面积比缩放窗口，宽高比保持不变（不会被拉伸），来回移动后尺寸能还原；
-- 窗口某一方向贴满了源屏幕时，到目标屏幕会继续贴满该方向；
-- 窗口过小时会放大到目标屏幕宽度的 20%；应用自身的最小/最大尺寸会被尊重，位置会自动校正回屏幕内；
+- 跨屏时保持窗口原尺寸；只有目标屏幕放不下时才会等比缩小，不会主动放大小窗口；
+- 尽量保持窗口在屏幕中的相对位置，并自动校正到菜单栏和 Dock 之外的可视区域；
+- 最大化窗口移动后会恢复最大化，避免 iTerm2 等按字符网格调整尺寸的应用越移越小；
 - 只会使用屏幕的可视区域，不会压到菜单栏和 Dock；
 - AppleScript 已内嵌在 `Karabiner-Elements.json` 里，导入即可用（修改脚本时需要同步两处）；
 - 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也加上 `osascript`）；

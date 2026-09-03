@@ -199,13 +199,19 @@ func failMove(
     _ message: String,
     window: AXUIElement,
     applicationPID: pid_t,
+    restoreZoom: Bool,
     restoreFullScreen: Bool
 ) -> Never {
     writeStderr(message)
 
-    // 移动中途失败也尽量恢复调用前的全屏状态，避免把用户留在普通窗口。
+    // 移动中途失败也尽量恢复调用前的窗口状态。
+    let candidate = focusedWindow(applicationPID: applicationPID) ?? window
+    if restoreZoom,
+       boolValue(copyAttribute(candidate, "AXZoomed")) != true,
+       setBoolean(candidate, "AXZoomed", true) == .success {
+        _ = waitForBoolean(candidate, "AXZoomed", expected: true, timeoutMs: 500)
+    }
     if restoreFullScreen {
-        let candidate = focusedWindow(applicationPID: applicationPID) ?? window
         if boolValue(copyAttribute(candidate, "AXFullScreen")) != true,
            setBoolean(candidate, "AXFullScreen", true) == .success {
             _ = waitForBoolean(candidate, "AXFullScreen", expected: true, timeoutMs: 2_500)
@@ -252,29 +258,18 @@ func mappedOrigin(in rect: CGRect, size: CGSize, xRatio: CGFloat, yRatio: CGFloa
     )
 }
 
-func scaledSize(_ size: CGSize, from source: CGRect, to destination: CGRect) -> CGSize {
-    guard size.width > 0, size.height > 0, source.width > 0, source.height > 0 else {
+func fittedSize(_ size: CGSize, in destination: CGRect) -> CGSize {
+    guard size.width > 0, size.height > 0,
+          destination.width > 0, destination.height > 0 else {
         return size
     }
 
-    let fillsWidth = size.width >= source.width * 0.95
-    let fillsHeight = size.height >= source.height * 0.95
-    let areaScale = sqrt(
-        (destination.width * destination.height) / (source.width * source.height)
+    // 跨屏时保持原尺寸；只有目标屏幕放不下时才等比缩小。
+    let scale = min(
+        1,
+        destination.width / size.width,
+        destination.height / size.height
     )
-
-    var scale = areaScale
-    if fillsWidth && fillsHeight {
-        scale = min(destination.width / size.width, destination.height / size.height)
-    } else if fillsWidth {
-        scale = destination.width / size.width
-    } else if fillsHeight {
-        scale = destination.height / size.height
-    }
-
-    // 窗口太小时至少放大到目标屏幕宽度的 20%，随后再收敛到可视区域内。
-    scale = max(scale, destination.width * 0.2 / size.width)
-    scale = min(scale, destination.width / size.width, destination.height / size.height)
 
     return CGSize(
         width: max(1, (size.width * scale).rounded()),
@@ -394,6 +389,7 @@ guard targetIndex != currentIndex else { exit(0) }
 
 // 原生全屏会拦截位置/尺寸写入：先退出，移动完成后在目标显示器恢复全屏。
 let wasFullScreen = boolValue(copyAttribute(window, "AXFullScreen")) == true
+let wasZoomed = !wasFullScreen && boolValue(copyAttribute(window, "AXZoomed")) == true
 if wasFullScreen {
     dbg("leaving full screen")
     guard setBoolean(window, "AXFullScreen", false) == .success,
@@ -409,7 +405,7 @@ if wasFullScreen {
         window = refreshedWindow
     }
 }
-if boolValue(copyAttribute(window, "AXZoomed")) == true {
+if wasZoomed {
     dbg("unzooming window")
     if setBoolean(window, "AXZoomed", false) == .success {
         _ = waitForBoolean(window, "AXZoomed", expected: false, timeoutMs: 500)
@@ -423,6 +419,7 @@ guard let originalPosition = pointValue(copyAttribute(window, kAXPositionAttribu
         "move-window-display: 无法读取窗口的位置或尺寸",
         window: window,
         applicationPID: focusedPID,
+        restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -439,7 +436,7 @@ let yRatio = relativeOrigin(
     length: originalSize.height,
     in: source.minY...source.maxY
 )
-let desiredSize = scaledSize(originalSize, from: source, to: target)
+let desiredSize = fittedSize(originalSize, in: target)
 
 dbg(
     "window pos=\(originalPosition) size=\(originalSize) "
@@ -452,6 +449,7 @@ guard isAttributeSettable(window, kAXPositionAttribute as String) else {
         "move-window-display: 当前窗口不允许移动",
         window: window,
         applicationPID: focusedPID,
+        restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -468,16 +466,18 @@ let transferredPosition = waitForPosition(window, expected: transferOrigin) ?? t
 dbg("transfer position \(transferOrigin) -> \(transferredPosition)")
 
 var actualSize = sizeValue(copyAttribute(window, kAXSizeAttribute as String)) ?? originalSize
-if setSize(window, kAXSizeAttribute as String, desiredSize) == .success {
-    actualSize = waitForSize(window, expected: desiredSize) ?? actualSize
-    // 刚跨屏时窗口管理器偶尔只接受一个维度；稳定后补写一次即可。
-    if !nearlyEqual(actualSize, desiredSize),
-       setSize(window, kAXSizeAttribute as String, desiredSize) == .success {
+if !nearlyEqual(actualSize, desiredSize) {
+    if setSize(window, kAXSizeAttribute as String, desiredSize) == .success {
         actualSize = waitForSize(window, expected: desiredSize) ?? actualSize
+        // 刚跨屏时窗口管理器偶尔只接受一个维度；稳定后补写一次即可。
+        if !nearlyEqual(actualSize, desiredSize),
+           setSize(window, kAXSizeAttribute as String, desiredSize) == .success {
+            actualSize = waitForSize(window, expected: desiredSize) ?? actualSize
+        }
+        dbg("size \(desiredSize) -> \(actualSize)")
+    } else {
+        dbg("window rejected size change; moving without resizing")
     }
-    dbg("size \(desiredSize) -> \(actualSize)")
-} else {
-    dbg("window rejected size change; moving without resizing")
 }
 
 let finalOrigin = mappedOrigin(
@@ -492,6 +492,7 @@ guard let actualPosition = waitForPosition(window, expected: finalOrigin) else {
         "move-window-display: 无法确认窗口移动结果",
         window: window,
         applicationPID: focusedPID,
+        restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -508,8 +509,19 @@ if !screens[targetIndex].frame.contains(finalCenter) {
         "move-window-display: 窗口移动失败",
         window: window,
         applicationPID: focusedPID,
+        restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
+}
+
+if wasZoomed {
+    dbg("restoring zoomed state on display \(targetIndex + 1)")
+    guard setBoolean(window, "AXZoomed", true) == .success,
+          waitForBoolean(window, "AXZoomed", expected: true, timeoutMs: 500) else {
+        writeStderr("move-window-display: 窗口已移动，但无法恢复最大化状态")
+        NSSound.beep()
+        exit(1)
+    }
 }
 
 if wasFullScreen {
