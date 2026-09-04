@@ -23,6 +23,8 @@ Karabiner-Elements，让它生成配置文件。源码没有变化时脚本会�
 反复覆盖导致 macOS 辅助功能授权失效；如需强制重新编译，可执行
 `./macOS/update.sh --force`。
 
+Windows 和 macOS 均可按 `CapsLock + r`，将当前窗口居中，并在当前屏幕可用区域
+80% 和 50% 的宽高之间切换。
 
 ## macOS 快捷键
 
@@ -32,6 +34,7 @@ Karabiner-Elements，让它生成配置文件。源码没有变化时脚本会�
 | CapsLock + u / i | 行首 / 行尾（Mac 风格） |
 | CapsLock + o | 在下方新起一行 |
 | CapsLock + f | 切换当前窗口的原生全屏状态 |
+| CapsLock + r | 将当前窗口居中，并在屏幕 80% 和 50% 两档大小之间切换 |
 | CapsLock + n | 把当前窗口移动到下一个屏幕 |
 | CapsLock + p | 把当前窗口移动到上一个屏幕 |
 | CapsLock + 1 / 2 / 3 | 把当前窗口移动到第 1 / 2 / 3 个屏幕 |
@@ -67,6 +70,9 @@ xcode-select --install
 # 切换当前窗口的原生全屏状态
 ~/.local/bin/move-window-display fullscreen
 
+# 将当前窗口居中，并在当前屏幕 80% 和 50% 两档大小之间切换
+~/.local/bin/move-window-display resize
+
 # 查看帮助
 ~/.local/bin/move-window-display --help
 ```
@@ -92,6 +98,7 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 ```text
 "$HOME/.local/bin/move-window-display" next
 "$HOME/.local/bin/move-window-display" prev
+"$HOME/.local/bin/move-window-display" resize
 "$HOME/.local/bin/move-window-display" 1
 "$HOME/.local/bin/move-window-display" 2
 "$HOME/.local/bin/move-window-display" 3

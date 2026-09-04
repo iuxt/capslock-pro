@@ -1,10 +1,11 @@
 // CapsLock Pro: 把当前前台窗口移动到其他屏幕 (Swift 版本)
 //
-// 用法: move-window-display [next|prev|1..9|fullscreen]
+// 用法: move-window-display [next|prev|1..9|fullscreen|resize]
 //   next  移动到下一个屏幕 (默认)
 //   prev  移动到上一个屏幕
 //   1..9  移动到指定序号的屏幕
 //   fullscreen  切换当前窗口的原生全屏状态
+//   resize  在屏幕 80% 和 50% 两档大小之间切换，并保持居中
 //
 // 编译: mkdir -p ~/.local/bin && swiftc -O move-window-display.swift -o ~/.local/bin/move-window-display
 // 权限: 系统设置 -> 隐私与安全性 -> 辅助功能, 允许 karabiner_grabber (或本程序)
@@ -310,9 +311,10 @@ enum Destination {
 enum Command {
     case move(Destination)
     case toggleFullScreen
+    case toggleWindowSize
 }
 
-let usage = "Usage: move-window-display [next|prev|1..9|fullscreen]"
+let usage = "Usage: move-window-display [next|prev|1..9|fullscreen|resize]"
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 if arguments.first == "-h" || arguments.first == "--help" {
@@ -333,6 +335,8 @@ case "prev":
     command = .move(.previous)
 case "fullscreen":
     command = .toggleFullScreen
+case "resize":
+    command = .toggleWindowSize
 case let value:
     guard let index = Int(value), (1...9).contains(index) else {
         writeStderr(usage)
@@ -381,13 +385,8 @@ if case .toggleFullScreen = command {
     exit(0)
 }
 
-guard case let .move(destination) = command else { exit(0) }
-
 let appKitScreens = NSScreen.screens
-guard let primaryScreen = appKitScreens.first, appKitScreens.count >= 2 else {
-    dbg("less than two screens")
-    exit(0)
-}
+guard let primaryScreen = appKitScreens.first else { exit(0) }
 
 // AppKit 是左下原点，AX 是主屏幕左上原点。副屏在主屏上方时 AX y 可以为负数。
 let primaryTop = primaryScreen.frame.maxY
@@ -411,6 +410,103 @@ let initialCenter = CGPoint(
     y: initialPosition.y + initialSize.height / 2
 )
 guard let currentIndex = screenIndex(containing: initialCenter, screens: screens) else { exit(0) }
+
+if case .toggleWindowSize = command {
+    let target = screens[currentIndex].visibleFrame
+    let widthRatio = initialSize.width / target.width
+    let heightRatio = initialSize.height / target.height
+    let distanceFromLarge = abs(widthRatio - 0.80) + abs(heightRatio - 0.80)
+    let distanceFromSmall = abs(widthRatio - 0.50) + abs(heightRatio - 0.50)
+    let targetRatio: CGFloat = distanceFromLarge <= distanceFromSmall ? 0.50 : 0.80
+
+    let wasFullScreen = boolValue(copyAttribute(window, "AXFullScreen")) == true
+    let wasZoomed = !wasFullScreen && boolValue(copyAttribute(window, "AXZoomed")) == true
+    if wasFullScreen {
+        dbg("leaving full screen before resizing")
+        guard setBoolean(window, "AXFullScreen", false) == .success,
+              waitForBoolean(window, "AXFullScreen", expected: false, timeoutMs: 2_500) else {
+            writeStderr("move-window-display: 无法退出全屏状态")
+            NSSound.beep()
+            exit(1)
+        }
+        usleep(650_000)
+        if let refreshedWindow = focusedWindow(applicationPID: focusedPID) {
+            window = refreshedWindow
+        }
+    }
+    if wasZoomed {
+        dbg("unzooming window before resizing")
+        guard setBoolean(window, "AXZoomed", false) == .success,
+              waitForBoolean(window, "AXZoomed", expected: false, timeoutMs: 500) else {
+            writeStderr("move-window-display: 无法退出最大化状态")
+            NSSound.beep()
+            exit(1)
+        }
+    }
+
+    guard isAttributeSettable(window, kAXSizeAttribute as String),
+          isAttributeSettable(window, kAXPositionAttribute as String) else {
+        failMove(
+            "move-window-display: 当前窗口不允许调整大小或位置",
+            window: window,
+            applicationPID: focusedPID,
+            restoreZoom: wasZoomed,
+            restoreFullScreen: wasFullScreen
+        )
+    }
+
+    let desiredSize = CGSize(
+        width: max(1, (target.width * targetRatio).rounded()),
+        height: max(1, (target.height * targetRatio).rounded())
+    )
+    let desiredOrigin = mappedOrigin(
+        in: target,
+        size: desiredSize,
+        xRatio: 0.5,
+        yRatio: 0.5
+    )
+    dbg(
+        "resizing on display \(currentIndex + 1) ratio=\(targetRatio) "
+            + "desiredOrigin=\(desiredOrigin) desiredSize=\(desiredSize)"
+    )
+
+    // 先移动到目标中心附近，再调整尺寸，最后按应用实际接受的尺寸精确居中。
+    _ = setPoint(window, kAXPositionAttribute as String, desiredOrigin)
+    guard setSize(window, kAXSizeAttribute as String, desiredSize) == .success else {
+        failMove(
+            "move-window-display: 当前窗口拒绝调整大小",
+            window: window,
+            applicationPID: focusedPID,
+            restoreZoom: wasZoomed,
+            restoreFullScreen: wasFullScreen
+        )
+    }
+    let actualSize = waitForSize(window, expected: desiredSize) ?? desiredSize
+    let centeredOrigin = mappedOrigin(
+        in: target,
+        size: actualSize,
+        xRatio: 0.5,
+        yRatio: 0.5
+    )
+    guard setPoint(window, kAXPositionAttribute as String, centeredOrigin) == .success,
+          waitForPosition(window, expected: centeredOrigin) != nil else {
+        failMove(
+            "move-window-display: 无法将窗口居中",
+            window: window,
+            applicationPID: focusedPID,
+            restoreZoom: wasZoomed,
+            restoreFullScreen: wasFullScreen
+        )
+    }
+    dbg("resized successfully to \(actualSize)")
+    exit(0)
+}
+
+guard case let .move(destination) = command else { exit(0) }
+guard appKitScreens.count >= 2 else {
+    dbg("less than two screens")
+    exit(0)
+}
 
 let targetIndex: Int
 switch destination {

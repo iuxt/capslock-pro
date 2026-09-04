@@ -100,27 +100,53 @@ CapsLock & f::  ; 切换当前激活窗口的最大化状态
 }
 
 
-; 居中并恢复窗口
+; 在当前显示器工作区的 80% 和 50% 两档大小之间切换，并居中
 CapsLock & r:: {
     activeWindow := WinGetID("A")
     if (activeWindow) {
-        ; 先恢复窗口（如果处于最大化状态）
+        ; 先用窗口中心点确定它所在的显示器。
+        WinGetPos(&winX, &winY, &winWidth, &winHeight, activeWindow)
+        centerX := winX + winWidth / 2
+        centerY := winY + winHeight / 2
+        monitorIndex := MonitorGetPrimary()
+        bestDistance := ""
+
+        Loop MonitorGetCount() {
+            MonitorGet(A_Index, &monitorLeft, &monitorTop, &monitorRight, &monitorBottom)
+            if (centerX >= monitorLeft && centerX < monitorRight
+                && centerY >= monitorTop && centerY < monitorBottom) {
+                monitorIndex := A_Index
+                break
+            }
+
+            nearestX := Min(Max(centerX, monitorLeft), monitorRight)
+            nearestY := Min(Max(centerY, monitorTop), monitorBottom)
+            distance := (centerX - nearestX) ** 2 + (centerY - nearestY) ** 2
+            if (bestDistance = "" || distance < bestDistance) {
+                bestDistance := distance
+                monitorIndex := A_Index
+            }
+        }
+
+        ; 使用工作区而不是显示器完整尺寸，避开任务栏。
+        MonitorGetWorkArea(monitorIndex, &workLeft, &workTop, &workRight, &workBottom)
+        workWidth := workRight - workLeft
+        workHeight := workBottom - workTop
+        widthRatio := winWidth / workWidth
+        heightRatio := winHeight / workHeight
+        distanceFromLarge := Abs(widthRatio - 0.80) + Abs(heightRatio - 0.80)
+        distanceFromSmall := Abs(widthRatio - 0.50) + Abs(heightRatio - 0.50)
+        targetRatio := distanceFromLarge <= distanceFromSmall ? 0.50 : 0.80
+
+        ; 最大化窗口需要先恢复，之后才能指定尺寸和位置。
         WinRestore(activeWindow)
-        
-        ; 获取显示器工作区尺寸（排除任务栏）
-        monitorWorkArea := SysGet(16)  ; SM_CXVIRTUALSCREEN
-        screenWidth := SysGet(16)
-        screenHeight := SysGet(17)
-        
-        ; 获取窗口尺寸
-        WinGetPos( , , &winWidth, &winHeight, activeWindow)
-        
-        ; 计算居中位置
-        newX := (screenWidth - winWidth) // 2
-        newY := (screenHeight - winHeight) // 2
-        
-        ; 移动窗口到中心位置
-        WinMove(newX, newY, winWidth, winHeight, activeWindow)
+        Sleep 100
+
+        targetWidth := Round(workWidth * targetRatio)
+        targetHeight := Round(workHeight * targetRatio)
+        newX := Round(workLeft + (workWidth - targetWidth) / 2)
+        newY := Round(workTop + (workHeight - targetHeight) / 2)
+        WinMove(newX, newY, targetWidth, targetHeight, activeWindow)
     } else {
         MsgBox("未找到当前激活的窗口。")
     }

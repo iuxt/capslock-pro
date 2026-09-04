@@ -254,6 +254,34 @@
             ]
         },
         {
+            "description": "CAPSLOCK + r to toggle centered window size between 80% and 50% (need Accessibility permission)",
+            "manipulators": [
+                {
+                    "conditions": [
+                        {
+                            "name": "caps_lock pressed",
+                            "type": "variable_if",
+                            "value": 1
+                        }
+                    ],
+                    "from": {
+                        "key_code": "r",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "shell_command": "\"$HOME/.local/bin/move-window-display\" resize"
+                        }
+                    ],
+                    "type": "basic"
+                }
+            ]
+        },
+        {
             "description": "CAPSLOCK + n/p to move window to next/previous display, CAPSLOCK + 1/2/3 to move window to display 1/2/3 (need Accessibility permission)",
             "manipulators": [
                 {
