@@ -1,6 +1,8 @@
 这是一个快捷键工具， 在Windows上是利用了autohotkey，在macOS上是用了[Karabiner-Elements](https://karabiner-elements.pqrs.org/)
 在任务计划程序中导入使用。可以以管理员身份开机自启动，不弹窗。
 
+Windows 更新 `.ahk` 后按 `CapsLock + F5` 重载。若已导入旧版计划任务，
+还需在任务的“条件”中取消“如果计算机改用电池电源则停止”，或重新导入更新后的 XML。
 
 macOS 参考 https://github.com/lianginx/capslock-yes
 
@@ -28,8 +30,14 @@ Windows 和 macOS 均可按 `CapsLock + r`，将当前窗口居中，并在当�
 
 ## macOS 快捷键
 
+单独按下或长按 CapsLock 不再切换大写锁定，避免组合键未按完整时误开大写。
+需要切换大写锁定时使用 `CapsLock + Esc`（与 Windows 一致）。如果更新前大写已经开启，
+更新后按一次 `CapsLock + Esc` 关闭即可。此规则修改需要运行 `./macOS/update.sh`
+或删除旧规则后重新导入才能生效。
+
 | 快捷键 | 功能 |
 | --- | --- |
+| CapsLock + Esc | 切换大写锁定 |
 | CapsLock + h / j / k / l | 左 / 下 / 上 / 右 |
 | CapsLock + u / i | 行首 / 行尾（Mac 风格） |
 | CapsLock + o | 在下方新起一行 |
@@ -117,3 +125,4 @@ Swift 版本见 `macOS/src/move-window-display.swift`，旧的 AppleScript 版�
 - Karabiner 规则调用 `~/.local/bin/move-window-display`，该文件需要由 Swift 源码预先编译；
 - 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也添加 `~/.local/bin/move-window-display`）；
 - Swift 版本遇到原生全屏窗口时，会自动退出全屏、移动到目标显示器，然后在目标显示器恢复全屏；如果应用或 macOS 拒绝切换，会响一声提示音。
+- 窗口操作始终绑定触发快捷键时的窗口；若应用在全屏切换时使原窗口对象失效，会报错停止，请等切换结束后重新按快捷键。

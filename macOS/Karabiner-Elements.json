@@ -5,8 +5,33 @@
     ],
     "rules": [
         {
-            "description": "CAPSLOCK + hjkl to arrow keys (Post CAPSLOCK if press CAPSLOCK alone)",
+            "description": "CAPSLOCK + hjkl to arrow keys, CAPSLOCK + Esc to toggle Caps Lock",
             "manipulators": [
+                {
+                    "conditions": [
+                        {
+                            "name": "caps_lock pressed",
+                            "type": "variable_if",
+                            "value": 1
+                        }
+                    ],
+                    "from": {
+                        "key_code": "escape",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "key_code": "caps_lock",
+                            "hold_down_milliseconds": 200,
+                            "repeat": false
+                        }
+                    ],
+                    "type": "basic"
+                },
                 {
                     "conditions": [
                         {
@@ -122,12 +147,6 @@
                                 "name": "caps_lock pressed",
                                 "value": 0
                             }
-                        }
-                    ],
-                    "to_if_alone": [
-                        {
-                            "key_code": "caps_lock",
-                            "hold_down_milliseconds": 200
                         }
                     ],
                     "type": "basic"

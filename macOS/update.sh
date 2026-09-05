@@ -129,7 +129,10 @@ function run(argv) {
     }
 
     const managedDescriptions = new Set(
-        descriptionsFrom(source.rules).concat(descriptionsFrom(previousRules))
+        descriptionsFrom(source.rules).concat(descriptionsFrom(previousRules), [
+            // 即使旧资源文件已被删除，也要替换会在单按时开启大写的旧规则。
+            'CAPSLOCK + hjkl to arrow keys (Post CAPSLOCK if press CAPSLOCK alone)'
+        ])
     );
     const selectedProfiles = (config.profiles || []).filter(function (profile) {
         return profile.selected === true;

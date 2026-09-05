@@ -43,6 +43,8 @@ CapsLock & Esc:: {
     static Toggle := false  ; 静态变量，初始值为 false
     Toggle := !Toggle        ; 切换状态
     SetCapsLockState (Toggle ? "AlwaysOn" : "AlwaysOff")
+    ; 保持当前热键线程，屏蔽 Esc 长按产生的重复触发。
+    KeyWait "Esc"
 }
 
 

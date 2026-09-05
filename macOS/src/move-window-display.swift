@@ -130,7 +130,13 @@ func waitForSize(_ element: AXUIElement, expected: CGSize, timeoutMs: Int = 300)
     }
 }
 
-func waitForPosition(_ element: AXUIElement, expected: CGPoint, timeoutMs: Int = 250) -> CGPoint? {
+// 居中要求到达目标；跨屏允许应用修正坐标，交由调用方验证目标屏幕。
+func waitForPosition(
+    _ element: AXUIElement,
+    expected: CGPoint,
+    timeoutMs: Int = 250,
+    requireExpected: Bool = false
+) -> CGPoint? {
     let start = Date()
     var last: CGPoint?
     var stableReads = 0
@@ -146,9 +152,11 @@ func waitForPosition(_ element: AXUIElement, expected: CGPoint, timeoutMs: Int =
             }
             last = current
 
-            if elapsedMs >= 60, stableReads >= 3 { return current }
+            if !requireExpected, elapsedMs >= 60, stableReads >= 3 { return current }
         }
-        if Int(Date().timeIntervalSince(start) * 1_000) >= timeoutMs { return last }
+        if Int(Date().timeIntervalSince(start) * 1_000) >= timeoutMs {
+            return requireExpected ? nil : last
+        }
         usleep(15_000)
     }
 }
@@ -200,21 +208,16 @@ func focusedWindow() -> AXUIElement? {
     return preferredWindow(in: AXUIElementCreateApplication(application.processIdentifier))
 }
 
-func focusedWindow(applicationPID: pid_t) -> AXUIElement? {
-    preferredWindow(in: AXUIElementCreateApplication(applicationPID))
-}
-
 func failMove(
     _ message: String,
     window: AXUIElement,
-    applicationPID: pid_t,
     restoreZoom: Bool,
     restoreFullScreen: Bool
 ) -> Never {
     writeStderr(message)
 
-    // 移动中途失败也尽量恢复调用前的窗口状态。
-    let candidate = focusedWindow(applicationPID: applicationPID) ?? window
+    // 只恢复原窗口。原 AX 对象失效时让写入失败，不按当前焦点猜测替代窗口。
+    let candidate = window
     if restoreZoom,
        boolValue(copyAttribute(candidate, "AXZoomed")) != true,
        setBoolean(candidate, "AXZoomed", true) == .success {
@@ -355,7 +358,8 @@ guard AXIsProcessTrustedWithOptions(trustOptions) else {
     exit(1)
 }
 
-guard var window = focusedWindow() else {
+// 整次操作绑定同一个 AX 窗口，动画期间焦点变化不能改变操作对象。
+guard let window = focusedWindow() else {
     writeStderr("move-window-display: 无法获取当前窗口")
     NSSound.beep()
     exit(1)
@@ -430,9 +434,6 @@ if case .toggleWindowSize = command {
             exit(1)
         }
         usleep(650_000)
-        if let refreshedWindow = focusedWindow(applicationPID: focusedPID) {
-            window = refreshedWindow
-        }
     }
     if wasZoomed {
         dbg("unzooming window before resizing")
@@ -449,7 +450,6 @@ if case .toggleWindowSize = command {
         failMove(
             "move-window-display: 当前窗口不允许调整大小或位置",
             window: window,
-            applicationPID: focusedPID,
             restoreZoom: wasZoomed,
             restoreFullScreen: wasFullScreen
         )
@@ -476,7 +476,6 @@ if case .toggleWindowSize = command {
         failMove(
             "move-window-display: 当前窗口拒绝调整大小",
             window: window,
-            applicationPID: focusedPID,
             restoreZoom: wasZoomed,
             restoreFullScreen: wasFullScreen
         )
@@ -489,11 +488,10 @@ if case .toggleWindowSize = command {
         yRatio: 0.5
     )
     guard setPoint(window, kAXPositionAttribute as String, centeredOrigin) == .success,
-          waitForPosition(window, expected: centeredOrigin) != nil else {
+          waitForPosition(window, expected: centeredOrigin, requireExpected: true) != nil else {
         failMove(
             "move-window-display: 无法将窗口居中",
             window: window,
-            applicationPID: focusedPID,
             restoreZoom: wasZoomed,
             restoreFullScreen: wasFullScreen
         )
@@ -536,10 +534,6 @@ if wasFullScreen {
     }
     // 属性会先变为 false，Space 切换动画随后才结束。
     usleep(650_000)
-    // 某些应用会在退出全屏时替换 AXWindow 对象，需要重新获取。
-    if let refreshedWindow = focusedWindow(applicationPID: focusedPID) {
-        window = refreshedWindow
-    }
 }
 if wasZoomed {
     dbg("unzooming window")
@@ -554,7 +548,6 @@ guard let originalPosition = pointValue(copyAttribute(window, kAXPositionAttribu
     failMove(
         "move-window-display: 无法读取窗口的位置或尺寸",
         window: window,
-        applicationPID: focusedPID,
         restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
@@ -584,7 +577,6 @@ guard isAttributeSettable(window, kAXPositionAttribute as String) else {
     failMove(
         "move-window-display: 当前窗口不允许移动",
         window: window,
-        applicationPID: focusedPID,
         restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
@@ -627,7 +619,6 @@ guard let actualPosition = waitForPosition(window, expected: finalOrigin) else {
     failMove(
         "move-window-display: 无法确认窗口移动结果",
         window: window,
-        applicationPID: focusedPID,
         restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
@@ -644,7 +635,6 @@ if !screens[targetIndex].frame.contains(finalCenter) {
     failMove(
         "move-window-display: 窗口移动失败",
         window: window,
-        applicationPID: focusedPID,
         restoreZoom: wasZoomed,
         restoreFullScreen: wasFullScreen
     )
@@ -671,11 +661,10 @@ if wasFullScreen {
 
     // 等待全屏 Space 的切换动画结束，再确认全屏窗口确实落在目标显示器。
     usleep(650_000)
-    let fullScreenWindow = focusedWindow(applicationPID: focusedPID) ?? window
     guard let fullScreenPosition = pointValue(
-        copyAttribute(fullScreenWindow, kAXPositionAttribute as String)
+        copyAttribute(window, kAXPositionAttribute as String)
     ), let fullScreenSize = sizeValue(
-        copyAttribute(fullScreenWindow, kAXSizeAttribute as String)
+        copyAttribute(window, kAXSizeAttribute as String)
     ) else {
         writeStderr("move-window-display: 无法确认全屏窗口的位置")
         NSSound.beep()
