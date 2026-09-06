@@ -13,6 +13,11 @@
                             "name": "caps_lock pressed",
                             "type": "variable_if",
                             "value": 1
+                        },
+                        {
+                            "type": "variable_if",
+                            "name": "capslock_pro.toggle_armed",
+                            "value": 1
                         }
                     ],
                     "from": {
@@ -25,9 +30,18 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "key_code": "caps_lock",
                             "hold_down_milliseconds": 200,
                             "repeat": false
+                        },
+                        {
+                            "shell_command": "mkdir -p \"$HOME/Library/Logs/CapsLock-Pro\" && /bin/date '+%Y-%m-%d %H:%M:%S %z CapsLock+Esc toggle requested' >> \"$HOME/Library/Logs/CapsLock-Pro/caps-lock-toggle.log\""
                         }
                     ],
                     "type": "basic"
@@ -49,6 +63,12 @@
                         }
                     },
                     "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
                         {
                             "key_code": "down_arrow"
                         }
@@ -73,6 +93,12 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "key_code": "up_arrow"
                         }
                     ],
@@ -95,6 +121,12 @@
                         }
                     },
                     "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
                         {
                             "key_code": "left_arrow"
                         }
@@ -119,6 +151,12 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "key_code": "right_arrow"
                         }
                     ],
@@ -137,15 +175,15 @@
                         {
                             "set_variable": {
                                 "name": "caps_lock pressed",
-                                "value": 1
+                                "value": 1,
+                                "key_up_value": 0
                             }
-                        }
-                    ],
-                    "to_after_key_up": [
+                        },
                         {
                             "set_variable": {
-                                "name": "caps_lock pressed",
-                                "value": 0
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 1,
+                                "key_up_value": 0
                             }
                         }
                     ],
@@ -174,6 +212,12 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "key_code": "left_arrow",
                             "modifiers": [
                                 "left_command"
@@ -199,6 +243,12 @@
                         }
                     },
                     "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
                         {
                             "key_code": "right_arrow",
                             "modifiers": [
@@ -230,6 +280,12 @@
                         }
                     },
                     "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
                         {
                             "key_code": "right_arrow",
                             "modifiers": [
@@ -265,6 +321,12 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "shell_command": "\"$HOME/.local/bin/move-window-display\" fullscreen"
                         }
                     ],
@@ -292,6 +354,12 @@
                         }
                     },
                     "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
                         {
                             "shell_command": "\"$HOME/.local/bin/move-window-display\" resize"
                         }
@@ -321,6 +389,12 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "shell_command": "\"$HOME/.local/bin/move-window-display\" next"
                         }
                     ],
@@ -343,6 +417,12 @@
                         }
                     },
                     "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
                         {
                             "shell_command": "\"$HOME/.local/bin/move-window-display\" prev"
                         }
@@ -367,6 +447,12 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "shell_command": "\"$HOME/.local/bin/move-window-display\" 1"
                         }
                     ],
@@ -390,6 +476,12 @@
                     },
                     "to": [
                         {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
                             "shell_command": "\"$HOME/.local/bin/move-window-display\" 2"
                         }
                     ],
@@ -412,6 +504,12 @@
                         }
                     },
                     "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
                         {
                             "shell_command": "\"$HOME/.local/bin/move-window-display\" 3"
                         }

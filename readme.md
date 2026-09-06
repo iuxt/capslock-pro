@@ -35,6 +35,12 @@ Windows 和 macOS 均可按 `CapsLock + r`，将当前窗口居中，并在当�
 更新后按一次 `CapsLock + Esc` 关闭即可。此规则修改需要运行 `./macOS/update.sh`
 或删除旧规则后重新导入才能生效。
 
+macOS 防误触：同一次按住 CapsLock 期间，使用过方向、行首行尾或窗口快捷键后，
+再按 Esc 会正常发送 Esc，不切换大写。需要切换时，先松开 CapsLock 和 Esc，
+再重新按住 CapsLock 并按 Esc；每轮按住 CapsLock 最多切换一次。
+切换请求的时间记录在 `~/Library/Logs/CapsLock-Pro/caps-lock-toggle.log`，不记录输入内容。
+若异常发生时没有对应记录，需继续排查系统或其他程序设置大写状态的路径。
+
 | 快捷键 | 功能 |
 | --- | --- |
 | CapsLock + Esc | 切换大写锁定 |
