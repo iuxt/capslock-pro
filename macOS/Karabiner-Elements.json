@@ -175,15 +175,27 @@
                         {
                             "set_variable": {
                                 "name": "caps_lock pressed",
-                                "value": 1,
-                                "key_up_value": 0
+                                "value": 1
                             }
                         },
                         {
                             "set_variable": {
                                 "name": "capslock_pro.toggle_armed",
-                                "value": 1,
-                                "key_up_value": 0
+                                "value": 1
+                            }
+                        }
+                    ],
+                    "to_after_key_up": [
+                        {
+                            "set_variable": {
+                                "name": "caps_lock pressed",
+                                "value": 0
+                            }
+                        },
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
                             }
                         }
                     ],
