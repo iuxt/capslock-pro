@@ -9,7 +9,6 @@ rules_source="$script_dir/Karabiner-Elements.json"
 bin_dir="${CAPSLOCK_PRO_BIN_DIR:-$HOME/.local/bin}"
 karabiner_config="${CAPSLOCK_PRO_KARABINER_CONFIG:-$HOME/.config/karabiner/karabiner.json}"
 assets_dir="${CAPSLOCK_PRO_KARABINER_ASSETS_DIR:-$HOME/.config/karabiner/assets/complex_modifications}"
-binary_path="$bin_dir/move-window-display"
 force_rebuild=false
 
 if [ "${1:-}" = "--force" ]; then
@@ -38,11 +37,14 @@ if [ ! -f "$karabiner_config" ]; then
 fi
 
 mkdir -p "$bin_dir" "$assets_dir"
+bin_dir="$(CDPATH= cd -- "$bin_dir" && pwd)"
+binary_path="$bin_dir/move-window-display"
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/capslock-pro.XXXXXX")"
 temporary_binary="$temporary_directory/move-window-display"
+rendered_rules="$temporary_directory/Karabiner-Elements.json"
 cleanup() {
-    rm -f "$temporary_binary"
+    rm -f "$temporary_binary" "$rendered_rules"
     rmdir "$temporary_directory" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -73,7 +75,8 @@ cp -p "$karabiner_config" "$config_backup"
 
 printf '正在更新 Karabiner 当前 profile……\n'
 sync_result="$(/usr/bin/osascript -l JavaScript - \
-    "$rules_source" "$asset_path" "$karabiner_config" <<'JXA'
+    "$rules_source" "$asset_path" "$karabiner_config" "$binary_path" \
+    "$HOME/.local/bin/move-window-display" "$rendered_rules" <<'JXA'
 ObjC.import('Foundation');
 
 function readText(path) {
@@ -110,10 +113,18 @@ function descriptionsFrom(rules) {
         .filter(function (description) { return typeof description === 'string'; });
 }
 
+function shellQuote(value) {
+    const quote = "'";
+    return quote + value.split(quote).join(quote + "\\" + quote + quote) + quote;
+}
+
 function run(argv) {
     const sourcePath = argv[0];
     const installedAssetPath = argv[1];
     const configPath = argv[2];
+    const binaryPath = argv[3];
+    const defaultBinaryPath = argv[4];
+    const renderedRulesPath = argv[5];
     const source = readJSON(sourcePath);
     const configText = readText(configPath);
     const config = JSON.parse(configText);
@@ -127,6 +138,24 @@ function run(argv) {
     } catch (_) {
         // 第一次安装时资源文件尚不存在。
     }
+
+    if (binaryPath !== defaultBinaryPath) {
+        const defaultCommand = '"$HOME/.local/bin/move-window-display"';
+        const installedCommand = shellQuote(binaryPath);
+        (source.rules || []).forEach(function (rule) {
+            (rule.manipulators || []).forEach(function (manipulator) {
+                (manipulator.to || []).forEach(function (action) {
+                    if (typeof action.shell_command === 'string' &&
+                        (action.shell_command === defaultCommand ||
+                         action.shell_command.startsWith(defaultCommand + ' '))) {
+                        action.shell_command = installedCommand +
+                            action.shell_command.slice(defaultCommand.length);
+                    }
+                });
+            });
+        });
+    }
+    writeTextAtomically(renderedRulesPath, JSON.stringify(source, null, 4) + '\n');
 
     const managedDescriptions = new Set(
         descriptionsFrom(source.rules).concat(descriptionsFrom(previousRules), [
@@ -175,7 +204,7 @@ function run(argv) {
 JXA
 )"
 chmod "$config_mode" "$karabiner_config"
-install -m 0644 "$rules_source" "$asset_path"
+install -m 0644 "$rendered_rules" "$asset_path"
 
 if [ "$sync_result" = "updated" ]; then
     printf 'Karabiner 配置已更新。\n'
