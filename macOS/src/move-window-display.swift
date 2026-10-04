@@ -1,6 +1,6 @@
 // CapsLock Pro: 把当前前台窗口移动到其他屏幕 (Swift 版本)
 //
-// 用法: move-window-display [next|prev|1..9|fullscreen|resize]
+// 用法: move-window-display [--background] [next|prev|1..9|fullscreen|resize]
 //   next  移动到下一个屏幕 (默认)
 //   prev  移动到上一个屏幕
 //   1..9  移动到指定序号的屏幕
@@ -13,6 +13,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import Darwin
 
 // MARK: - Logging
 
@@ -28,6 +29,50 @@ func dbg(_ message: String) {
     guard debug else { return }
     let elapsed = Int(Date().timeIntervalSince(startedAt) * 1_000)
     writeStderr("[\(elapsed)ms] \(message)")
+}
+
+// MARK: - Process lifecycle
+
+/// 新建进程组并断开标准输入输出，避免后续 Karabiner shell_command 终止当前操作。
+func launchInBackground(executable: String, arguments: [String], logPath: String) throws {
+    var attributes: posix_spawnattr_t?
+    var actions: posix_spawn_file_actions_t?
+    func check(_ error: Int32) throws {
+        if error != 0 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(error)) }
+    }
+    try check(posix_spawnattr_init(&attributes))
+    defer { posix_spawnattr_destroy(&attributes) }
+    try check(posix_spawn_file_actions_init(&actions))
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    try check(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)))
+    try check(posix_spawnattr_setpgroup(&attributes, 0))
+    try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0))
+    try check(posix_spawn_file_actions_addopen(
+        &actions, STDOUT_FILENO, logPath, O_WRONLY | O_CREAT | O_APPEND, 0o600
+    ))
+    try check(posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO))
+
+    let strings = ([executable] + arguments).map { strdup($0) }
+    let environment = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") }
+    defer { (strings + environment).forEach { free($0) } }
+    guard (strings + environment).allSatisfy({ $0 != nil }) else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOMEM))
+    }
+    var argv = strings + [nil]
+    var envp = environment + [nil]
+    var pid: pid_t = 0
+    try check(posix_spawn(&pid, executable, &actions, &attributes, &argv, &envp))
+}
+
+/// 不排队，避免动画结束后对已经改变的焦点执行积压命令。退出时由内核释放锁。
+func acquireOperationLock(at path: String) throws -> Int32? {
+    let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+    guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+    if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { return descriptor }
+    let error = errno
+    close(descriptor)
+    if error == EWOULDBLOCK { return nil }
+    throw NSError(domain: NSPOSIXErrorDomain, code: Int(error))
 }
 
 // MARK: - AX helpers
@@ -211,18 +256,19 @@ func focusedWindow() -> AXUIElement? {
 func failMove(
     _ message: String,
     window: AXUIElement,
-    restoreZoom: Bool,
+    restoreFrame: CGRect,
     restoreFullScreen: Bool
 ) -> Never {
     writeStderr(message)
 
     // 只恢复原窗口。原 AX 对象失效时让写入失败，不按当前焦点猜测替代窗口。
     let candidate = window
-    if restoreZoom,
-       boolValue(copyAttribute(candidate, "AXZoomed")) != true,
-       setBoolean(candidate, "AXZoomed", true) == .success {
-        _ = waitForBoolean(candidate, "AXZoomed", expected: true, timeoutMs: 500)
-    }
+    // 先回到原屏，再恢复尺寸，避免尺寸被较小的目标屏幕限制。
+    setPoint(candidate, kAXPositionAttribute as String, restoreFrame.origin)
+    _ = waitForPosition(candidate, expected: restoreFrame.origin)
+    setSize(candidate, kAXSizeAttribute as String, restoreFrame.size)
+    _ = waitForSize(candidate, expected: restoreFrame.size)
+    setPoint(candidate, kAXPositionAttribute as String, restoreFrame.origin)
     if restoreFullScreen {
         if boolValue(copyAttribute(candidate, "AXFullScreen")) != true,
            setBoolean(candidate, "AXFullScreen", true) == .success {
@@ -289,6 +335,18 @@ func fittedSize(_ size: CGSize, in destination: CGRect) -> CGSize {
     )
 }
 
+/// AppKit 没有可读写的 AXZoomed。按四边判断是否铺满可用区域，容忍终端字符网格留白。
+func fillsVisibleFrame(_ window: CGRect, in visibleFrame: CGRect, tolerance: CGFloat = 24) -> Bool {
+    abs(window.minX - visibleFrame.minX) <= tolerance
+        && abs(window.minY - visibleFrame.minY) <= tolerance
+        && abs(window.maxX - visibleFrame.maxX) <= tolerance
+        && abs(window.maxY - visibleFrame.maxY) <= tolerance
+}
+
+func movedSize(_ size: CGSize, maximized: Bool, in destination: CGRect) -> CGSize {
+    maximized ? destination.size : fittedSize(size, in: destination)
+}
+
 func screenIndex(containing point: CGPoint, screens: [ScreenGeometry]) -> Int? {
     if let index = screens.firstIndex(where: { $0.frame.contains(point) }) { return index }
 
@@ -317,8 +375,10 @@ enum Command {
     case toggleWindowSize
 }
 
-let usage = "Usage: move-window-display [next|prev|1..9|fullscreen|resize]"
-let arguments = Array(CommandLine.arguments.dropFirst())
+let usage = "Usage: move-window-display [--background] [next|prev|1..9|fullscreen|resize]"
+var arguments = Array(CommandLine.arguments.dropFirst())
+let background = arguments.first == "--background"
+if background { arguments.removeFirst() }
 
 if arguments.first == "-h" || arguments.first == "--help" {
     print(usage)
@@ -349,6 +409,38 @@ case let value:
 }
 
 // MARK: - Main
+
+if background {
+    do {
+        let logDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/CapsLock-Pro", isDirectory: true)
+        try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        try launchInBackground(
+            executable: URL(fileURLWithPath: CommandLine.arguments[0]).path,
+            arguments: arguments,
+            logPath: logDirectory.appendingPathComponent("window.log").path
+        )
+        exit(0)
+    } catch {
+        writeStderr("move-window-display: 无法启动后台操作：\(error)")
+        exit(1)
+    }
+}
+
+let operationLock: Int32
+do {
+    let directory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Caches/CapsLock-Pro", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    guard let descriptor = try acquireOperationLock(at: directory.appendingPathComponent("window.lock").path) else {
+        dbg("another window operation is still running; ignoring request")
+        exit(0)
+    }
+    operationLock = descriptor
+} catch {
+    writeStderr("move-window-display: 无法锁定窗口操作：\(error)")
+    exit(1)
+}
 
 let trustOptions = [
     kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
@@ -386,6 +478,8 @@ if case .toggleFullScreen = command {
         NSSound.beep()
         exit(1)
     }
+    // 属性先更新，Space 动画随后结束；期间继续持锁。
+    usleep(650_000)
     exit(0)
 }
 
@@ -414,6 +508,7 @@ let initialCenter = CGPoint(
     y: initialPosition.y + initialSize.height / 2
 )
 guard let currentIndex = screenIndex(containing: initialCenter, screens: screens) else { exit(0) }
+let initialFrame = CGRect(origin: initialPosition, size: initialSize)
 
 if case .toggleWindowSize = command {
     let target = screens[currentIndex].visibleFrame
@@ -424,7 +519,6 @@ if case .toggleWindowSize = command {
     let targetRatio: CGFloat = distanceFromLarge <= distanceFromSmall ? 0.50 : 0.80
 
     let wasFullScreen = boolValue(copyAttribute(window, "AXFullScreen")) == true
-    let wasZoomed = !wasFullScreen && boolValue(copyAttribute(window, "AXZoomed")) == true
     if wasFullScreen {
         dbg("leaving full screen before resizing")
         guard setBoolean(window, "AXFullScreen", false) == .success,
@@ -435,22 +529,13 @@ if case .toggleWindowSize = command {
         }
         usleep(650_000)
     }
-    if wasZoomed {
-        dbg("unzooming window before resizing")
-        guard setBoolean(window, "AXZoomed", false) == .success,
-              waitForBoolean(window, "AXZoomed", expected: false, timeoutMs: 500) else {
-            writeStderr("move-window-display: 无法退出最大化状态")
-            NSSound.beep()
-            exit(1)
-        }
-    }
 
     guard isAttributeSettable(window, kAXSizeAttribute as String),
           isAttributeSettable(window, kAXPositionAttribute as String) else {
         failMove(
             "move-window-display: 当前窗口不允许调整大小或位置",
             window: window,
-            restoreZoom: wasZoomed,
+            restoreFrame: initialFrame,
             restoreFullScreen: wasFullScreen
         )
     }
@@ -476,7 +561,7 @@ if case .toggleWindowSize = command {
         failMove(
             "move-window-display: 当前窗口拒绝调整大小",
             window: window,
-            restoreZoom: wasZoomed,
+            restoreFrame: initialFrame,
             restoreFullScreen: wasFullScreen
         )
     }
@@ -492,7 +577,7 @@ if case .toggleWindowSize = command {
         failMove(
             "move-window-display: 无法将窗口居中",
             window: window,
-            restoreZoom: wasZoomed,
+            restoreFrame: initialFrame,
             restoreFullScreen: wasFullScreen
         )
     }
@@ -523,7 +608,7 @@ guard targetIndex != currentIndex else { exit(0) }
 
 // 原生全屏会拦截位置/尺寸写入：先退出，移动完成后在目标显示器恢复全屏。
 let wasFullScreen = boolValue(copyAttribute(window, "AXFullScreen")) == true
-let wasZoomed = !wasFullScreen && boolValue(copyAttribute(window, "AXZoomed")) == true
+let wasMaximized = !wasFullScreen && fillsVisibleFrame(initialFrame, in: screens[currentIndex].visibleFrame)
 if wasFullScreen {
     dbg("leaving full screen")
     guard setBoolean(window, "AXFullScreen", false) == .success,
@@ -535,20 +620,13 @@ if wasFullScreen {
     // 属性会先变为 false，Space 切换动画随后才结束。
     usleep(650_000)
 }
-if wasZoomed {
-    dbg("unzooming window")
-    if setBoolean(window, "AXZoomed", false) == .success {
-        _ = waitForBoolean(window, "AXZoomed", expected: false, timeoutMs: 500)
-    }
-}
-
 guard let originalPosition = pointValue(copyAttribute(window, kAXPositionAttribute as String)),
       let originalSize = sizeValue(copyAttribute(window, kAXSizeAttribute as String)),
       originalSize.width > 0, originalSize.height > 0 else {
     failMove(
         "move-window-display: 无法读取窗口的位置或尺寸",
         window: window,
-        restoreZoom: wasZoomed,
+        restoreFrame: initialFrame,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -565,7 +643,7 @@ let yRatio = relativeOrigin(
     length: originalSize.height,
     in: source.minY...source.maxY
 )
-let desiredSize = fittedSize(originalSize, in: target)
+let desiredSize = movedSize(originalSize, maximized: wasMaximized, in: target)
 
 dbg(
     "window pos=\(originalPosition) size=\(originalSize) "
@@ -577,7 +655,7 @@ guard isAttributeSettable(window, kAXPositionAttribute as String) else {
     failMove(
         "move-window-display: 当前窗口不允许移动",
         window: window,
-        restoreZoom: wasZoomed,
+        restoreFrame: initialFrame,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -619,7 +697,7 @@ guard let actualPosition = waitForPosition(window, expected: finalOrigin) else {
     failMove(
         "move-window-display: 无法确认窗口移动结果",
         window: window,
-        restoreZoom: wasZoomed,
+        restoreFrame: initialFrame,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -635,19 +713,18 @@ if !screens[targetIndex].frame.contains(finalCenter) {
     failMove(
         "move-window-display: 窗口移动失败",
         window: window,
-        restoreZoom: wasZoomed,
+        restoreFrame: initialFrame,
         restoreFullScreen: wasFullScreen
     )
 }
 
-if wasZoomed {
-    dbg("restoring zoomed state on display \(targetIndex + 1)")
-    guard setBoolean(window, "AXZoomed", true) == .success,
-          waitForBoolean(window, "AXZoomed", expected: true, timeoutMs: 500) else {
-        writeStderr("move-window-display: 窗口已移动，但无法恢复最大化状态")
-        NSSound.beep()
-        exit(1)
-    }
+if wasMaximized && !fillsVisibleFrame(CGRect(origin: actualPosition, size: verifiedSize), in: target) {
+    failMove(
+        "move-window-display: 目标窗口无法铺满屏幕可用区域",
+        window: window,
+        restoreFrame: initialFrame,
+        restoreFullScreen: false
+    )
 }
 
 if wasFullScreen {

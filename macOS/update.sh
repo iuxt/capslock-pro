@@ -38,11 +38,15 @@ if [ ! -f "$karabiner_config" ]; then
 fi
 
 mkdir -p "$bin_dir" "$assets_dir"
+# Karabiner 的工作目录与安装脚本不同，规则中必须使用绝对路径。
+bin_dir="$(CDPATH= cd -- "$bin_dir" && pwd)"
+binary_path="$bin_dir/move-window-display"
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/capslock-pro.XXXXXX")"
 temporary_binary="$temporary_directory/move-window-display"
+temporary_rules="$temporary_directory/capslock-pro.json"
 cleanup() {
-    rm -f "$temporary_binary"
+    rm -f "$temporary_binary" "$temporary_rules"
     rmdir "$temporary_directory" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -73,7 +77,7 @@ cp -p "$karabiner_config" "$config_backup"
 
 printf '正在更新 Karabiner 当前 profile……\n'
 sync_result="$(/usr/bin/osascript -l JavaScript - \
-    "$rules_source" "$asset_path" "$karabiner_config" <<'JXA'
+    "$rules_source" "$asset_path" "$karabiner_config" "$binary_path" "$temporary_rules" <<'JXA'
 ObjC.import('Foundation');
 
 function readText(path) {
@@ -110,11 +114,27 @@ function descriptionsFrom(rules) {
         .filter(function (description) { return typeof description === 'string'; });
 }
 
+function shellQuote(value) {
+    return "'" + value.split("'").join("'\\''") + "'";
+}
+
 function run(argv) {
     const sourcePath = argv[0];
     const installedAssetPath = argv[1];
     const configPath = argv[2];
     const source = readJSON(sourcePath);
+    const defaultExecutable = '"$HOME/.local/bin/move-window-display"';
+    source.rules.forEach(function (rule) {
+        rule.manipulators.forEach(function (manipulator) {
+            (manipulator.to || []).forEach(function (event) {
+                if (typeof event.shell_command === 'string' &&
+                    event.shell_command.indexOf(defaultExecutable + ' ') === 0) {
+                    event.shell_command = shellQuote(argv[3]) +
+                        event.shell_command.slice(defaultExecutable.length);
+                }
+            });
+        });
+    });
     const configText = readText(configPath);
     const config = JSON.parse(configText);
 
@@ -166,6 +186,8 @@ function run(argv) {
     });
 
     const updatedText = JSON.stringify(config, null, 4) + '\n';
+    // 同步资源文件，后续从 Karabiner 界面导入时也使用实际安装路径。
+    writeTextAtomically(argv[4], JSON.stringify(source, null, 4) + '\n');
     if (updatedText !== configText) {
         writeTextAtomically(configPath, updatedText);
         return 'updated';
@@ -175,7 +197,7 @@ function run(argv) {
 JXA
 )"
 chmod "$config_mode" "$karabiner_config"
-install -m 0644 "$rules_source" "$asset_path"
+install -m 0644 "$temporary_rules" "$asset_path"
 
 if [ "$sync_result" = "updated" ]; then
     printf 'Karabiner 配置已更新。\n'

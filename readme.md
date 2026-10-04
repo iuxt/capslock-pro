@@ -25,6 +25,10 @@ Karabiner-Elements，让它生成配置文件。源码没有变化时脚本会�
 反复覆盖导致 macOS 辅助功能授权失效；如需强制重新编译，可执行
 `./macOS/update.sh --force`。
 
+如需安装到其他目录，可运行 `CAPSLOCK_PRO_BIN_DIR="/自定义目录" ./macOS/update.sh`。
+脚本会同时更新当前 profile 和规则资源中的调用路径；自定义目录安装请使用此脚本，
+网页导入的规则使用默认目录 `~/.local/bin`。
+
 Windows 和 macOS 均可按 `CapsLock + r`，将当前窗口居中，并在当前屏幕可用区域
 80% 和 50% 的宽高之间切换。
 
@@ -110,25 +114,38 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 仓库提供的 `Karabiner-Elements.json` 默认调用编译后的 Swift 程序：
 
 ```text
-"$HOME/.local/bin/move-window-display" next
-"$HOME/.local/bin/move-window-display" prev
-"$HOME/.local/bin/move-window-display" resize
-"$HOME/.local/bin/move-window-display" 1
-"$HOME/.local/bin/move-window-display" 2
-"$HOME/.local/bin/move-window-display" 3
+"$HOME/.local/bin/move-window-display" --background next
+"$HOME/.local/bin/move-window-display" --background prev
+"$HOME/.local/bin/move-window-display" --background resize
+"$HOME/.local/bin/move-window-display" --background 1
+"$HOME/.local/bin/move-window-display" --background 2
+"$HOME/.local/bin/move-window-display" --background 3
 ```
 
 导入规则前需要先完成上面的编译安装。更新 Swift 源码后，重新编译即可，无需再次导入规则。
 
+窗口快捷键通过独立后台进程执行，避免后续快捷键终止尚未完成的全屏切换。
+窗口操作期间的新窗口命令会被忽略，请在动画结束后再次按键。
+后台错误信息写入 `~/Library/Logs/CapsLock-Pro/window.log`。
+本次升级同时修改了调用参数，需要运行 `./macOS/update.sh`，或编译后重新导入规则。
+
 ### 跨屏行为
 
-Swift 版本见 `macOS/src/move-window-display.swift`，旧的 AppleScript 版本见 `macOS/move-window-to-display.applescript`。它们的主要行为如下：
+默认使用的 Swift 版本见 `macOS/src/move-window-display.swift`，主要行为如下。
+旧的 `macOS/move-window-to-display.applescript` 保留供参考，不包含本次 Swift 修复。
 
 - 跨屏时保持窗口原尺寸；只有目标屏幕放不下时才会等比缩小，不会主动放大小窗口；
 - 尽量保持窗口在屏幕中的相对位置，并自动校正到菜单栏和 Dock 之外的可视区域；
-- 最大化窗口移动后会恢复最大化，避免 iTerm2 等按字符网格调整尺寸的应用越移越小；
+- 已铺满当前屏幕可用区域的窗口，跨屏后会重新铺满目标屏幕；允许最多 24 点的边缘留白，以兼容 iTerm2 等按字符网格调整尺寸的应用；
+- 最大化按窗口几何尺寸识别。应用自身仅放大到内容大小、没有铺满屏幕的 Zoom 窗口，按普通窗口处理；
 - 只会使用屏幕的可视区域，不会压到菜单栏和 Dock；
 - Karabiner 规则调用 `~/.local/bin/move-window-display`，该文件需要由 Swift 源码预先编译；
 - 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也添加 `~/.local/bin/move-window-display`）；
 - Swift 版本遇到原生全屏窗口时，会自动退出全屏、移动到目标显示器，然后在目标显示器恢复全屏；如果应用或 macOS 拒绝切换，会响一声提示音。
 - 窗口操作始终绑定触发快捷键时的窗口；若应用在全屏切换时使原窗口对象失效，会报错停止，请等切换结束后重新按快捷键。
+
+### macOS 回归检查
+
+在 macOS 上运行 `python3 macOS/tests/test_macos.py`，检查编译、跨屏尺寸计算、
+后台进程隔离、操作互斥和自定义目录安装。测试仅操作临时文件和测试进程，
+不修改现用 Karabiner 配置，也不移动真实窗口。
