@@ -24,6 +24,9 @@ karabiner://karabiner/assets/complex_modifications/import?url=https://raw.github
 Karabiner-Elements，让它生成配置文件。源码没有变化时脚本会保留现有可执行文件，避免
 反复覆盖导致 macOS 辅助功能授权失效；如需强制重新编译，可执行
 `./macOS/update.sh --force`。
+若要安装到其他目录，可设置 `CAPSLOCK_PRO_BIN_DIR`，例如
+`CAPSLOCK_PRO_BIN_DIR="$HOME/bin" ./macOS/update.sh`。脚本会将实际安装路径同步到
+当前 profile 的窗口快捷键规则和 Karabiner 规则资源；直接导入仓库中的 JSON 仍使用默认路径。
 
 如需安装到其他目录，可运行 `CAPSLOCK_PRO_BIN_DIR="/自定义目录" ./macOS/update.sh`。
 脚本会同时更新当前 profile 和规则资源中的调用路径；自定义目录安装请使用此脚本，

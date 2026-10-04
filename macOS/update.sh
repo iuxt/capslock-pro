@@ -9,7 +9,6 @@ rules_source="$script_dir/Karabiner-Elements.json"
 bin_dir="${CAPSLOCK_PRO_BIN_DIR:-$HOME/.local/bin}"
 karabiner_config="${CAPSLOCK_PRO_KARABINER_CONFIG:-$HOME/.config/karabiner/karabiner.json}"
 assets_dir="${CAPSLOCK_PRO_KARABINER_ASSETS_DIR:-$HOME/.config/karabiner/assets/complex_modifications}"
-binary_path="$bin_dir/move-window-display"
 force_rebuild=false
 
 if [ "${1:-}" = "--force" ]; then
@@ -122,6 +121,9 @@ function run(argv) {
     const sourcePath = argv[0];
     const installedAssetPath = argv[1];
     const configPath = argv[2];
+    const binaryPath = argv[3];
+    const defaultBinaryPath = argv[4];
+    const renderedRulesPath = argv[5];
     const source = readJSON(sourcePath);
     const defaultExecutable = '"$HOME/.local/bin/move-window-display"';
     source.rules.forEach(function (rule) {
@@ -147,6 +149,24 @@ function run(argv) {
     } catch (_) {
         // 第一次安装时资源文件尚不存在。
     }
+
+    if (binaryPath !== defaultBinaryPath) {
+        const defaultCommand = '"$HOME/.local/bin/move-window-display"';
+        const installedCommand = shellQuote(binaryPath);
+        (source.rules || []).forEach(function (rule) {
+            (rule.manipulators || []).forEach(function (manipulator) {
+                (manipulator.to || []).forEach(function (action) {
+                    if (typeof action.shell_command === 'string' &&
+                        (action.shell_command === defaultCommand ||
+                         action.shell_command.startsWith(defaultCommand + ' '))) {
+                        action.shell_command = installedCommand +
+                            action.shell_command.slice(defaultCommand.length);
+                    }
+                });
+            });
+        });
+    }
+    writeTextAtomically(renderedRulesPath, JSON.stringify(source, null, 4) + '\n');
 
     const managedDescriptions = new Set(
         descriptionsFrom(source.rules).concat(descriptionsFrom(previousRules), [
