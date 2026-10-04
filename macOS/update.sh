@@ -122,8 +122,7 @@ function run(argv) {
     const installedAssetPath = argv[1];
     const configPath = argv[2];
     const binaryPath = argv[3];
-    const defaultBinaryPath = argv[4];
-    const renderedRulesPath = argv[5];
+    const renderedRulesPath = argv[4];
     const source = readJSON(sourcePath);
     const defaultExecutable = '"$HOME/.local/bin/move-window-display"';
     source.rules.forEach(function (rule) {
@@ -131,7 +130,7 @@ function run(argv) {
             (manipulator.to || []).forEach(function (event) {
                 if (typeof event.shell_command === 'string' &&
                     event.shell_command.indexOf(defaultExecutable + ' ') === 0) {
-                    event.shell_command = shellQuote(argv[3]) +
+                    event.shell_command = shellQuote(binaryPath) +
                         event.shell_command.slice(defaultExecutable.length);
                 }
             });
@@ -150,22 +149,6 @@ function run(argv) {
         // 第一次安装时资源文件尚不存在。
     }
 
-    if (binaryPath !== defaultBinaryPath) {
-        const defaultCommand = '"$HOME/.local/bin/move-window-display"';
-        const installedCommand = shellQuote(binaryPath);
-        (source.rules || []).forEach(function (rule) {
-            (rule.manipulators || []).forEach(function (manipulator) {
-                (manipulator.to || []).forEach(function (action) {
-                    if (typeof action.shell_command === 'string' &&
-                        (action.shell_command === defaultCommand ||
-                         action.shell_command.startsWith(defaultCommand + ' '))) {
-                        action.shell_command = installedCommand +
-                            action.shell_command.slice(defaultCommand.length);
-                    }
-                });
-            });
-        });
-    }
     writeTextAtomically(renderedRulesPath, JSON.stringify(source, null, 4) + '\n');
 
     const managedDescriptions = new Set(
@@ -206,8 +189,6 @@ function run(argv) {
     });
 
     const updatedText = JSON.stringify(config, null, 4) + '\n';
-    // 同步资源文件，后续从 Karabiner 界面导入时也使用实际安装路径。
-    writeTextAtomically(argv[4], JSON.stringify(source, null, 4) + '\n');
     if (updatedText !== configText) {
         writeTextAtomically(configPath, updatedText);
         return 'updated';
