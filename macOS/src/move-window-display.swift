@@ -719,12 +719,8 @@ if !screens[targetIndex].frame.contains(finalCenter) {
 }
 
 if wasMaximized && !fillsVisibleFrame(CGRect(origin: actualPosition, size: verifiedSize), in: target) {
-    failMove(
-        "move-window-display: 目标窗口无法铺满屏幕可用区域",
-        window: window,
-        restoreFrame: initialFrame,
-        restoreFullScreen: false
-    )
+    // 已确认窗口进入目标屏幕；应用限制尺寸时保留实际大小，不撤销跨屏移动。
+    dbg("window cannot fill target visible frame; keeping it on target display")
 }
 
 if wasFullScreen {
