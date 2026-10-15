@@ -257,8 +257,15 @@ func selectExternalScreen(_ screens: [NSScreen], explicitID: UInt32?) throws -> 
 // MARK: - Brightness toast
 
 struct BrightnessToastState: Codable {
-    let percentage: Int
+    let percentage: Int?
     let updatedAt: Double
+    let pending: Bool?
+
+    init(percentage: Int?, updatedAt: Double, pending: Bool = false) {
+        self.percentage = percentage
+        self.updatedAt = updatedAt
+        self.pending = pending
+    }
 }
 
 struct BrightnessToastPaths {
@@ -279,11 +286,46 @@ func keepBrightnessToastVisible(displayID: UInt32, cache: URL) throws {
     let paths = BrightnessToastPaths(directory: cache, displayID: displayID)
     let gate = try acquireBrightnessLock(at: paths.gate)
     defer { close(gate) }
-    guard let data = try? Data(contentsOf: paths.state),
-          let previous = try? JSONDecoder().decode(BrightnessToastState.self, from: data) else { return }
-    let state = BrightnessToastState(percentage: previous.percentage,
-                                     updatedAt: ProcessInfo.processInfo.systemUptime)
+    let previous = (try? Data(contentsOf: paths.state)).flatMap {
+        try? JSONDecoder().decode(BrightnessToastState.self, from: $0)
+    }
+    let state = BrightnessToastState(percentage: previous?.percentage,
+                                     updatedAt: ProcessInfo.processInfo.systemUptime, pending: true)
     try JSONEncoder().encode(state).write(to: paths.state, options: .atomic)
+}
+
+/// Reuse the viewer instead of launching an AppKit process per key.
+func launchBrightnessToastIfNeeded(displayID: UInt32, cache: URL) throws {
+    let paths = BrightnessToastPaths(directory: cache, displayID: displayID)
+    let gate = try acquireBrightnessLock(at: paths.gate)
+    defer { close(gate) }
+    let owner = open(paths.owner, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+    guard owner >= 0 else { throw BrightnessError("无法检查亮度提示进程") }
+    defer { close(owner) }
+    if flock(owner, LOCK_EX | LOCK_NB) != 0 {
+        if errno == EWOULDBLOCK { return }
+        throw BrightnessError("无法检查亮度提示锁")
+    }
+    // Release before the child claims ownership; the gate synchronizes startup and shutdown.
+    flock(owner, LOCK_UN)
+    let log = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/CapsLock-Pro", isDirectory: true)
+    try FileManager.default.createDirectory(at: log, withIntermediateDirectories: true)
+    try launchInBackground(executable: URL(fileURLWithPath: CommandLine.arguments[0]).path,
+                           arguments: ["--toast", String(displayID)],
+                           logPath: log.appendingPathComponent("brightness.log").path)
+}
+
+/// The shortcut launcher can signal the UI before the DDC worker initializes AppKit/screens.
+func shortcutDisplayID(explicitID: UInt32?) -> UInt32? {
+    var displays = [CGDirectDisplayID](repeating: 0, count: 32)
+    var count: UInt32 = 0
+    guard CGGetActiveDisplayList(UInt32(displays.count), &displays, &count) == .success else { return nil }
+    let external = displays.prefix(Int(count)).filter { CGDisplayIsBuiltin($0) == 0 }
+    if let explicitID { return external.contains(explicitID) ? explicitID : nil }
+    if external.count == 1 { return external.first }
+    guard let cursor = CGEvent(source: nil)?.location else { return nil }
+    return external.first { CGDisplayBounds($0).contains(cursor) }
 }
 
 func brightnessOperationIsRunning(displayID: UInt32, cache: URL) -> Bool {
@@ -295,7 +337,7 @@ func brightnessOperationIsRunning(displayID: UInt32, cache: URL) -> Bool {
     return errno == EWOULDBLOCK
 }
 
-/// Publish only confirmed brightness. A short-lived UI worker coalesces updates per display.
+/// Replace the pending indication with confirmed brightness.
 func showBrightnessToast(_ brightness: Brightness, displayID: UInt32, cache: URL) throws {
     let paths = BrightnessToastPaths(directory: cache, displayID: displayID)
     let gate = try acquireBrightnessLock(at: paths.gate)
@@ -303,17 +345,11 @@ func showBrightnessToast(_ brightness: Brightness, displayID: UInt32, cache: URL
     let state = BrightnessToastState(percentage: brightness.percentage,
                                      updatedAt: ProcessInfo.processInfo.systemUptime)
     try JSONEncoder().encode(state).write(to: paths.state, options: .atomic)
-    // If a viewer already exists, it reads the new state; additional workers exit immediately.
-    let log = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/CapsLock-Pro", isDirectory: true)
-    try FileManager.default.createDirectory(at: log, withIntermediateDirectories: true)
-    try launchInBackground(executable: URL(fileURLWithPath: CommandLine.arguments[0]).path,
-                           arguments: ["--toast", String(displayID)],
-                           logPath: log.appendingPathComponent("brightness.log").path)
 }
 
 final class BrightnessToastView: NSVisualEffectView {
     private let valueLabel = NSTextField(labelWithString: "")
+    private let titleLabel = NSTextField(labelWithString: "亮度")
     private let fill = NSView()
 
     init() {
@@ -331,11 +367,10 @@ final class BrightnessToastView: NSVisualEffectView {
         symbol.contentTintColor = .white
         addSubview(symbol)
 
-        let title = NSTextField(labelWithString: "亮度")
-        title.font = .systemFont(ofSize: 15, weight: .medium)
-        title.textColor = .white
-        title.frame = NSRect(x: 62, y: 46, width: 60, height: 22)
-        addSubview(title)
+        titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        titleLabel.textColor = .white
+        titleLabel.frame = NSRect(x: 62, y: 46, width: 64, height: 22)
+        addSubview(titleLabel)
 
         valueLabel.font = .monospacedDigitSystemFont(ofSize: 24, weight: .semibold)
         valueLabel.textColor = .white
@@ -359,11 +394,12 @@ final class BrightnessToastView: NSVisualEffectView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func update(percentage: Int) {
-        let percentage = min(100, max(0, percentage))
-        valueLabel.stringValue = "\(percentage)%"
-        fill.frame = NSRect(x: 0, y: 0, width: 196 * CGFloat(percentage) / 100, height: 6)
-        setAccessibilityLabel("亮度 \(percentage)%")
+    func update(percentage: Int?, pending: Bool = false) {
+        let percentage = percentage.map { min(100, max(0, $0)) }
+        titleLabel.stringValue = pending ? "调节中" : "亮度"
+        valueLabel.stringValue = percentage.map { "\($0)%" } ?? "…"
+        fill.frame = NSRect(x: 0, y: 0, width: 196 * CGFloat(percentage ?? 0) / 100, height: 6)
+        setAccessibilityLabel(pending ? "正在调节亮度" : "亮度 \(percentage ?? 0)%")
     }
 }
 
@@ -408,7 +444,7 @@ func runBrightnessToast(displayID: UInt32, cache: URL) throws {
         let age = state.map { ProcessInfo.processInfo.systemUptime - $0.updatedAt } ?? .infinity
         // Keep the same panel alive during a pending read/write. Cap stale activity if DDC stalls.
         let waitingForBrightness = age < 5 && brightnessOperationIsRunning(displayID: displayID, cache: cache)
-        guard let state, age < 1.3 || waitingForBrightness else {
+        guard let state, age < 60 else {
             finished = true
             panel.orderOut(nil)
             flock(owner, LOCK_UN)
@@ -421,9 +457,14 @@ func runBrightnessToast(displayID: UInt32, cache: URL) throws {
             }
             return
         }
+        guard age < 1.3 || waitingForBrightness else {
+            // Retain the AppKit window briefly for fast reappearance on the next key press.
+            if panel.isVisible { panel.orderOut(nil) }
+            return
+        }
         if lastUpdate != state.updatedAt {
             lastUpdate = state.updatedAt
-            view.update(percentage: state.percentage)
+            view.update(percentage: state.percentage, pending: state.pending == true)
             if !panel.isVisible { panel.orderFrontRegardless() }
         }
     }
@@ -461,6 +502,17 @@ func run() throws {
     if background {
         let logs = home.appendingPathComponent("Library/Logs/CapsLock-Pro", isDirectory: true)
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        if ["up", "down"].contains(arguments[0]),
+           let id = shortcutDisplayID(explicitID: arguments.count == 2 ? UInt32(arguments[1]) : nil) {
+            do {
+                let cache = home.appendingPathComponent("Library/Caches/CapsLock-Pro", isDirectory: true)
+                try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+                try keepBrightnessToastVisible(displayID: id, cache: cache)
+                try launchBrightnessToastIfNeeded(displayID: id, cache: cache)
+                // Bind the eventual hardware operation to the same screen even if the mouse moves.
+                arguments = [arguments[0], String(id)]
+            } catch { writeStderr("display-brightness: 无法提前显示亮度提示：\(error)") }
+        }
         try launchInBackground(executable: URL(fileURLWithPath: CommandLine.arguments[0]).path,
                                arguments: arguments, logPath: logs.appendingPathComponent("brightness.log").path)
         return
@@ -479,7 +531,10 @@ func run() throws {
     let cache = home.appendingPathComponent("Library/Caches/CapsLock-Pro", isDirectory: true)
     try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
     if arguments[0] != "get" {
-        do { try keepBrightnessToastVisible(displayID: id, cache: cache) }
+        do {
+            try keepBrightnessToastVisible(displayID: id, cache: cache)
+            try launchBrightnessToastIfNeeded(displayID: id, cache: cache)
+        }
         catch { writeStderr("display-brightness: 无法延长亮度提示：\(error)") }
     }
     let lock = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-\(id).lock").path)
@@ -492,6 +547,7 @@ func run() throws {
         if current != original.current { try display.setBrightness(current) }
         do {
             try showBrightnessToast(Brightness(current: current, maximum: original.maximum), displayID: id, cache: cache)
+            try launchBrightnessToastIfNeeded(displayID: id, cache: cache)
         } catch {
             writeStderr("display-brightness: 无法显示亮度提示：\(error)")
         }

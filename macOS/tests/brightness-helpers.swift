@@ -41,14 +41,16 @@ case "toast-activity":
     let cache = URL(fileURLWithPath: testArguments[1], isDirectory: true)
     try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
     let paths = BrightnessToastPaths(directory: cache, displayID: 42)
-    // No confirmed value yet: a pending request must not invent a percentage.
+    // Show pending immediately even without a prior value, without inventing a percentage.
     try keepBrightnessToastVisible(displayID: 42, cache: cache)
-    precondition(!FileManager.default.fileExists(atPath: paths.state.path))
+    let pending = try JSONDecoder().decode(BrightnessToastState.self, from: Data(contentsOf: paths.state))
+    precondition(pending.percentage == nil && pending.pending == true)
     let stale = BrightnessToastState(percentage: 65, updatedAt: ProcessInfo.processInfo.systemUptime - 2)
     try JSONEncoder().encode(stale).write(to: paths.state)
     try keepBrightnessToastVisible(displayID: 42, cache: cache)
     let refreshed = try JSONDecoder().decode(BrightnessToastState.self, from: Data(contentsOf: paths.state))
     precondition(refreshed.percentage == 65)
+    precondition(refreshed.pending == true)
     precondition(ProcessInfo.processInfo.systemUptime - refreshed.updatedAt < 0.5)
     precondition(!brightnessOperationIsRunning(displayID: 42, cache: cache))
     let fd = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-42.lock").path)
