@@ -54,11 +54,42 @@ macOS 防误触：同一次按住 CapsLock 期间，使用过方向、行首行�
 | CapsLock + h / j / k / l | 左 / 下 / 上 / 右 |
 | CapsLock + u / i | 行首 / 行尾（Mac 风格） |
 | CapsLock + o | 在下方新起一行 |
+| CapsLock + [ / ] | 外接显示器硬件亮度降低 / 提高 5 个百分点（Apple Silicon、DDC/CI） |
 | CapsLock + f | 切换当前窗口的原生全屏状态 |
 | CapsLock + r | 将当前窗口居中，并在屏幕 80% 和 50% 两档大小之间切换 |
 | CapsLock + n | 把当前窗口移动到下一个屏幕 |
 | CapsLock + p | 把当前窗口移动到上一个屏幕 |
 | CapsLock + 1 / 2 / 3 | 把当前窗口移动到第 1 / 2 / 3 个屏幕 |
+
+## macOS 外接显示器亮度
+
+运行 `./macOS/update.sh` 后，`CapsLock + [` 降低亮度，`CapsLock + ]` 提高亮度。
+每次调整显示器亮度范围的 5%（四舍五入，至少一个硬件单位），到达边界后停止。
+这是 DDC/CI 硬件亮度调节，需要显示器开启 DDC/CI，且当前连接支持该协议。
+只接一个外接屏时直接控制它；多个外接屏时控制鼠标所在外接屏，鼠标位于内置屏时不执行。
+不需要运行第三方显示器管理软件，也不需要额外的辅助功能权限。
+
+当前实现支持 Apple Silicon，通过私有 IOKit/CoreDisplay 接口工作；系统升级和不同
+显示器/转接器可能影响兼容性。已实测 M1 Pro 的机身 HDMI 连接 F27G10U，支持亮度读写。
+包含 MCDP29xx HDMI 桥接芯片的特殊寻址处理，不能据此保证所有 HDMI 显示器均可用。
+暂不支持 Intel Mac，不提供软件遮罩降亮度。
+
+```bash
+# 查看外接屏 ID（ID 可能随重新连接变化）
+~/.local/bin/display-brightness list
+# 读取当前亮度，或调高/调低
+~/.local/bin/display-brightness get
+~/.local/bin/display-brightness up
+~/.local/bin/display-brightness down
+# 可在命令末尾指定 list 输出的显示器 ID
+~/.local/bin/display-brightness get 3
+```
+
+快捷键在独立后台进程中执行，同一屏幕的读写串行进行，避免连续按键覆盖彼此的结果。
+等待超过 3 秒的请求报错退出，避免积压。支持反复点按；目前不提供按住括号自动连调。
+后台结果和错误记录在 `~/Library/Logs/CapsLock-Pro/brightness.log`。
+若读取失败，检查显示器的 DDC/CI 设置、HDR/预设模式和连接方式。
+代码来源及 MIT 许可见 [第三方声明](macOS/THIRD_PARTY_NOTICES.md)。
 
 ## Swift 跨屏工具的使用方法
 

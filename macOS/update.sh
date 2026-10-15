@@ -3,7 +3,6 @@
 set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-swift_source="$script_dir/src/move-window-display.swift"
 rules_source="$script_dir/Karabiner-Elements.json"
 
 bin_dir="${CAPSLOCK_PRO_BIN_DIR:-$HOME/.local/bin}"
@@ -43,21 +42,27 @@ binary_path="$bin_dir/move-window-display"
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/capslock-pro.XXXXXX")"
 temporary_binary="$temporary_directory/move-window-display"
+brightness_path="$bin_dir/display-brightness"
 temporary_rules="$temporary_directory/capslock-pro.json"
 cleanup() {
-    rm -f "$temporary_binary" "$temporary_rules"
+    rm -f "$temporary_directory/move-window-display" "$temporary_directory/display-brightness" "$temporary_rules"
     rmdir "$temporary_directory" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-if [ "$force_rebuild" = true ] || [ ! -x "$binary_path" ] || [ "$swift_source" -nt "$binary_path" ]; then
-    printf '正在编译 Swift 工具……\n'
-    # 保持输出文件名固定，避免链接器生成随机的代码签名标识。
-    swiftc -O "$swift_source" -o "$temporary_binary"
-    install -m 0755 "$temporary_binary" "$binary_path"
-else
-    printf 'Swift 工具已经是最新版本，跳过编译。\n'
-fi
+for tool_name in move-window-display display-brightness; do
+    swift_source="$script_dir/src/$tool_name.swift"
+    tool_path="$bin_dir/$tool_name"
+    temporary_binary="$temporary_directory/$tool_name"
+    if [ "$force_rebuild" = true ] || [ ! -x "$tool_path" ] || [ "$swift_source" -nt "$tool_path" ]; then
+        printf '正在编译 Swift 工具 %s……\n' "$tool_name"
+        # 保持输出文件名固定，避免链接器生成随机的代码签名标识。
+        swiftc -O "$swift_source" -o "$temporary_binary"
+        install -m 0755 "$temporary_binary" "$tool_path"
+    else
+        printf 'Swift 工具 %s 已经是最新版本，跳过编译。\n' "$tool_name"
+    fi
+done
 
 rules_title="$(/usr/bin/plutil -extract title raw -o - "$rules_source")"
 asset_path="$assets_dir/capslock-pro.json"
@@ -76,7 +81,7 @@ cp -p "$karabiner_config" "$config_backup"
 
 printf '正在更新 Karabiner 当前 profile……\n'
 sync_result="$(/usr/bin/osascript -l JavaScript - \
-    "$rules_source" "$asset_path" "$karabiner_config" "$binary_path" "$temporary_rules" <<'JXA'
+    "$rules_source" "$asset_path" "$karabiner_config" "$binary_path" "$temporary_rules" "$brightness_path" <<'JXA'
 ObjC.import('Foundation');
 
 function readText(path) {
@@ -124,15 +129,20 @@ function run(argv) {
     const binaryPath = argv[3];
     const renderedRulesPath = argv[4];
     const source = readJSON(sourcePath);
-    const defaultExecutable = '"$HOME/.local/bin/move-window-display"';
+    const executables = [
+        ['"$HOME/.local/bin/move-window-display"', binaryPath],
+        ['"$HOME/.local/bin/display-brightness"', argv[5]]
+    ];
     source.rules.forEach(function (rule) {
         rule.manipulators.forEach(function (manipulator) {
             (manipulator.to || []).forEach(function (event) {
-                if (typeof event.shell_command === 'string' &&
-                    event.shell_command.indexOf(defaultExecutable + ' ') === 0) {
-                    event.shell_command = shellQuote(binaryPath) +
-                        event.shell_command.slice(defaultExecutable.length);
-                }
+                executables.forEach(function (executable) {
+                    if (typeof event.shell_command === 'string' &&
+                        event.shell_command.indexOf(executable[0] + ' ') === 0) {
+                        event.shell_command = shellQuote(executable[1]) +
+                            event.shell_command.slice(executable[0].length);
+                    }
+                });
             });
         });
     });
@@ -206,5 +216,6 @@ else
     printf 'Karabiner 配置已经是最新版本。\n'
 fi
 printf 'Swift 可执行文件：%s\n' "$binary_path"
+printf '亮度可执行文件：%s\n' "$brightness_path"
 printf 'Karabiner 规则资源：%s\n' "$asset_path"
 printf '配置备份：%s\n' "$config_backup"

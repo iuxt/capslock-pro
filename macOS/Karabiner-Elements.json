@@ -313,6 +313,69 @@
             ]
         },
         {
+            "description": "CAPSLOCK + [ / ] to decrease / increase external display hardware brightness",
+            "manipulators": [
+                {
+                    "conditions": [
+                        {
+                            "name": "caps_lock pressed",
+                            "type": "variable_if",
+                            "value": 1
+                        }
+                    ],
+                    "from": {
+                        "key_code": "open_bracket",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
+                            "shell_command": "\"$HOME/.local/bin/display-brightness\" --background down"
+                        }
+                    ],
+                    "type": "basic"
+                },
+                {
+                    "conditions": [
+                        {
+                            "name": "caps_lock pressed",
+                            "type": "variable_if",
+                            "value": 1
+                        }
+                    ],
+                    "from": {
+                        "key_code": "close_bracket",
+                        "modifiers": {
+                            "optional": [
+                                "any"
+                            ]
+                        }
+                    },
+                    "to": [
+                        {
+                            "set_variable": {
+                                "name": "capslock_pro.toggle_armed",
+                                "value": 0
+                            }
+                        },
+                        {
+                            "shell_command": "\"$HOME/.local/bin/display-brightness\" --background up"
+                        }
+                    ],
+                    "type": "basic"
+                }
+            ]
+        },
+        {
             "description": "CAPSLOCK + f to toggle native full screen (need Accessibility permission)",
             "manipulators": [
                 {

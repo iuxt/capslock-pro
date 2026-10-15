@@ -27,6 +27,17 @@ class MacOSTests(unittest.TestCase):
         cls.harness = cls.directory / "helpers"
         subprocess.run(["swiftc", "-warnings-as-errors", str(helpers), "-o", str(cls.harness)], check=True)
 
+        brightness_source = ROOT / "macOS/src/display-brightness.swift"
+        cls.brightness = cls.directory / "display-brightness"
+        subprocess.run(["swiftc", "-O", "-warnings-as-errors", str(brightness_source),
+                        "-o", str(cls.brightness)], check=True)
+        brightness_helpers = cls.directory / "brightness-helpers.swift"
+        brightness_helpers.write_text(brightness_source.read_text().split("// MARK: - Arguments")[0]
+                                      + (ROOT / "macOS/tests/brightness-helpers.swift").read_text())
+        cls.brightness_harness = cls.directory / "brightness-helpers"
+        subprocess.run(["swiftc", "-warnings-as-errors", str(brightness_helpers),
+                        "-o", str(cls.brightness_harness)], check=True)
+
     @classmethod
     def tearDownClass(cls):
         cls.scratch.cleanup()
@@ -69,6 +80,7 @@ class MacOSTests(unittest.TestCase):
             bin_dir.mkdir()
             binary = bin_dir / "move-window-display"
             shutil.copy2(self.binary, binary)
+            shutil.copy2(self.brightness, bin_dir / "display-brightness")
             config_path = directory / "karabiner.json"
             source = json.loads((ROOT / "macOS/Karabiner-Elements.json").read_text())
             old_rules = json.loads(json.dumps(source["rules"]))
@@ -105,6 +117,46 @@ class MacOSTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(marker.read_text().splitlines(), ["--background", "next"])
             self.assertFalse((directory / "INJECTED").exists())
+
+            brightness_binary = bin_dir / "display-brightness"
+            brightness_binary.write_text(binary.read_text())
+            for key, direction in [("open_bracket", "down"), ("close_bracket", "up")]:
+                manipulator = next(m for rule in installed["rules"] for m in rule["manipulators"]
+                                   if m["from"]["key_code"] == key)
+                self.assertIn({"name": "caps_lock pressed", "type": "variable_if", "value": 1},
+                              manipulator["conditions"])
+                self.assertEqual(manipulator["to"][0]["set_variable"],
+                                 {"name": "capslock_pro.toggle_armed", "value": 0})
+                result = self.run_command(["/bin/sh", "-c", manipulator["to"][-1]["shell_command"]],
+                                          env=env, cwd=directory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(marker.read_text().splitlines(), ["--background", direction])
+                self.assertFalse((directory / "INJECTED").exists())
+
+    def test_brightness_protocol_and_arguments(self):
+        result = self.run_command([self.brightness_harness, "protocol"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for args, expected in [(["--help"], 0), (["--background", "--help"], 0),
+                               ([], 2), (["invalid"], 2), (["get", "invalid"], 2),
+                               (["get", "-1"], 2), (["list", "3"], 2), (["up", "3", "extra"], 2)]:
+            result = self.run_command([self.brightness, *args])
+            self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_brightness_serializes_updates(self):
+        counter = self.directory / "counter"
+        counter.write_text("0")
+        workers = [subprocess.Popen([self.brightness_harness, "increment", counter]) for _ in range(8)]
+        try:
+            for worker in workers:
+                self.assertEqual(worker.wait(timeout=10), 0)
+            self.assertEqual(counter.read_text(), "8")
+        finally:
+            for worker in workers:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.wait(timeout=5)
+        result = self.run_command([self.brightness_harness, "timeout", self.directory / "busy.lock"])
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_lock_excludes_overlap_and_recovers_after_crash(self):
         lock = self.directory / "operation.lock"
