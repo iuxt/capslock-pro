@@ -142,6 +142,10 @@ class MacOSTests(unittest.TestCase):
             result = self.run_command([self.brightness, *args])
             self.assertEqual(result.returncode, expected, result.stderr)
 
+    def test_toast_activity_during_pending_brightness(self):
+        result = self.run_command([self.brightness_harness, "toast-activity", self.directory / "toast-cache"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_brightness_serializes_updates(self):
         counter = self.directory / "counter"
         counter.write_text("0")

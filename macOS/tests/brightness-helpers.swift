@@ -20,6 +20,11 @@ case "protocol":
     precondition(Brightness(current: 99, maximum: 100).adjusted(direction: 1) == 100)
     precondition(Brightness(current: 100, maximum: 200).adjusted(direction: 1) == 110)
     precondition(Brightness(current: 1, maximum: 10).adjusted(direction: -1) == 0)
+    precondition(Brightness(current: 70, maximum: 100).percentage == 70)
+    precondition(Brightness(current: 140, maximum: 200).percentage == 70)
+    precondition(Brightness(current: 1, maximum: 3).percentage == 33)
+    precondition(Brightness(current: 0, maximum: 100).percentage == 0)
+    precondition(Brightness(current: 100, maximum: 100).percentage == 100)
     // Fixed wire vectors, including a command whose checksum ends in zero.
     precondition(brightnessPacket(value: nil) == [0x82, 0x01, 0x10, 0xfd])
     precondition(brightnessPacket(value: 65) == [0x84, 0x03, 0x10, 0, 65, 0xe9])
@@ -32,6 +37,25 @@ case "increment":
     usleep(50_000) // Provoke overlap between concurrent read/modify/write operations.
     try String(value + 1).write(toFile: path, atomically: true, encoding: .utf8)
     close(fd)
+case "toast-activity":
+    let cache = URL(fileURLWithPath: testArguments[1], isDirectory: true)
+    try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+    let paths = BrightnessToastPaths(directory: cache, displayID: 42)
+    // No confirmed value yet: a pending request must not invent a percentage.
+    try keepBrightnessToastVisible(displayID: 42, cache: cache)
+    precondition(!FileManager.default.fileExists(atPath: paths.state.path))
+    let stale = BrightnessToastState(percentage: 65, updatedAt: ProcessInfo.processInfo.systemUptime - 2)
+    try JSONEncoder().encode(stale).write(to: paths.state)
+    try keepBrightnessToastVisible(displayID: 42, cache: cache)
+    let refreshed = try JSONDecoder().decode(BrightnessToastState.self, from: Data(contentsOf: paths.state))
+    precondition(refreshed.percentage == 65)
+    precondition(ProcessInfo.processInfo.systemUptime - refreshed.updatedAt < 0.5)
+    precondition(!brightnessOperationIsRunning(displayID: 42, cache: cache))
+    let fd = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-42.lock").path)
+    precondition(brightnessOperationIsRunning(displayID: 42, cache: cache))
+    close(fd)
+    precondition(!brightnessOperationIsRunning(displayID: 42, cache: cache))
+    print("toast activity passed")
 case "timeout":
     let path = testArguments[1]
     let fd = try acquireBrightnessLock(at: path)

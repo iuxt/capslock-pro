@@ -70,6 +70,11 @@ struct Brightness: Equatable {
     let current: UInt16
     let maximum: UInt16
 
+    var percentage: Int {
+        guard maximum > 0 else { return 0 }
+        return min(100, max(0, Int((Double(current) / Double(maximum) * 100).rounded())))
+    }
+
     func adjusted(direction: Int) -> UInt16 {
         let step = max(1, Int((Double(maximum) * 0.05).rounded()))
         return UInt16(min(Int(maximum), max(0, Int(current) + direction * step)))
@@ -249,12 +254,200 @@ func selectExternalScreen(_ screens: [NSScreen], explicitID: UInt32?) throws -> 
     throw BrightnessError(external.isEmpty ? "没有外接显示器" : "请将鼠标移到要调节的外接显示器")
 }
 
+// MARK: - Brightness toast
+
+struct BrightnessToastState: Codable {
+    let percentage: Int
+    let updatedAt: Double
+}
+
+struct BrightnessToastPaths {
+    let state: URL
+    let gate: String
+    let owner: String
+
+    init(directory: URL, displayID: UInt32) {
+        let base = directory.appendingPathComponent("brightness-toast-\(displayID)").path
+        state = URL(fileURLWithPath: base + ".json")
+        gate = base + ".lock"
+        owner = base + "-owner.lock"
+    }
+}
+
+/// Extend an existing toast as soon as a request arrives, before waiting for DDC.
+func keepBrightnessToastVisible(displayID: UInt32, cache: URL) throws {
+    let paths = BrightnessToastPaths(directory: cache, displayID: displayID)
+    let gate = try acquireBrightnessLock(at: paths.gate)
+    defer { close(gate) }
+    guard let data = try? Data(contentsOf: paths.state),
+          let previous = try? JSONDecoder().decode(BrightnessToastState.self, from: data) else { return }
+    let state = BrightnessToastState(percentage: previous.percentage,
+                                     updatedAt: ProcessInfo.processInfo.systemUptime)
+    try JSONEncoder().encode(state).write(to: paths.state, options: .atomic)
+}
+
+func brightnessOperationIsRunning(displayID: UInt32, cache: URL) -> Bool {
+    let path = cache.appendingPathComponent("brightness-\(displayID).lock").path
+    let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    guard descriptor >= 0 else { return false }
+    defer { close(descriptor) }
+    if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { return false }
+    return errno == EWOULDBLOCK
+}
+
+/// Publish only confirmed brightness. A short-lived UI worker coalesces updates per display.
+func showBrightnessToast(_ brightness: Brightness, displayID: UInt32, cache: URL) throws {
+    let paths = BrightnessToastPaths(directory: cache, displayID: displayID)
+    let gate = try acquireBrightnessLock(at: paths.gate)
+    defer { close(gate) }
+    let state = BrightnessToastState(percentage: brightness.percentage,
+                                     updatedAt: ProcessInfo.processInfo.systemUptime)
+    try JSONEncoder().encode(state).write(to: paths.state, options: .atomic)
+    // If a viewer already exists, it reads the new state; additional workers exit immediately.
+    let log = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/CapsLock-Pro", isDirectory: true)
+    try FileManager.default.createDirectory(at: log, withIntermediateDirectories: true)
+    try launchInBackground(executable: URL(fileURLWithPath: CommandLine.arguments[0]).path,
+                           arguments: ["--toast", String(displayID)],
+                           logPath: log.appendingPathComponent("brightness.log").path)
+}
+
+final class BrightnessToastView: NSVisualEffectView {
+    private let valueLabel = NSTextField(labelWithString: "")
+    private let fill = NSView()
+
+    init() {
+        super.init(frame: NSRect(x: 0, y: 0, width: 244, height: 100))
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+        appearance = NSAppearance(named: .vibrantDark)
+        wantsLayer = true
+        layer?.cornerRadius = 20
+        layer?.masksToBounds = true
+
+        let symbol = NSImageView(frame: NSRect(x: 24, y: 43, width: 27, height: 27))
+        symbol.image = NSImage(systemSymbolName: "sun.max.fill", accessibilityDescription: "亮度")
+        symbol.contentTintColor = .white
+        addSubview(symbol)
+
+        let title = NSTextField(labelWithString: "亮度")
+        title.font = .systemFont(ofSize: 15, weight: .medium)
+        title.textColor = .white
+        title.frame = NSRect(x: 62, y: 46, width: 60, height: 22)
+        addSubview(title)
+
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: 24, weight: .semibold)
+        valueLabel.textColor = .white
+        valueLabel.alignment = .right
+        valueLabel.frame = NSRect(x: 126, y: 40, width: 94, height: 33)
+        addSubview(valueLabel)
+
+        let track = NSView(frame: NSRect(x: 24, y: 23, width: 196, height: 6))
+        track.wantsLayer = true
+        track.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.2).cgColor
+        track.layer?.cornerRadius = 3
+        track.layer?.masksToBounds = true
+        fill.wantsLayer = true
+        fill.layer?.backgroundColor = NSColor.white.cgColor
+        fill.layer?.cornerRadius = 3
+        track.addSubview(fill)
+        addSubview(track)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func update(percentage: Int) {
+        let percentage = min(100, max(0, percentage))
+        valueLabel.stringValue = "\(percentage)%"
+        fill.frame = NSRect(x: 0, y: 0, width: 196 * CGFloat(percentage) / 100, height: 6)
+        setAccessibilityLabel("亮度 \(percentage)%")
+    }
+}
+
+func runBrightnessToast(displayID: UInt32, cache: URL) throws {
+    let paths = BrightnessToastPaths(directory: cache, displayID: displayID)
+    let owner: Int32
+    do {
+        let gate = try acquireBrightnessLock(at: paths.gate)
+        defer { close(gate) }
+        owner = open(paths.owner, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard owner >= 0 else { throw BrightnessError("无法创建亮度提示锁") }
+        if flock(owner, LOCK_EX | LOCK_NB) != 0 { close(owner); return }
+    }
+    defer { close(owner) }
+
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    guard let screen = NSScreen.screens.first(where: { screenID($0) == displayID }) else { return }
+    let view = BrightnessToastView()
+    let panel = NSPanel(contentRect: view.frame, styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+    panel.contentView = view
+    panel.isOpaque = false
+    panel.backgroundColor = .clear
+    panel.hasShadow = true
+    panel.level = .statusBar
+    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+    panel.ignoresMouseEvents = true
+    panel.hidesOnDeactivate = false
+    panel.animationBehavior = .none
+    panel.setFrameOrigin(NSPoint(x: screen.visibleFrame.midX - view.frame.width / 2,
+                                 y: screen.visibleFrame.minY + 72))
+
+    var lastUpdate: Double?
+    var finished = false
+    func refresh() {
+        guard !finished else { return }
+        // Synchronize shutdown with publishers so a request at the hide deadline isn't lost.
+        guard let gate = try? acquireBrightnessLock(at: paths.gate) else { return }
+        defer { close(gate) }
+        let state = (try? Data(contentsOf: paths.state)).flatMap { try? JSONDecoder().decode(BrightnessToastState.self, from: $0) }
+        let age = state.map { ProcessInfo.processInfo.systemUptime - $0.updatedAt } ?? .infinity
+        // Keep the same panel alive during a pending read/write. Cap stale activity if DDC stalls.
+        let waitingForBrightness = age < 5 && brightnessOperationIsRunning(displayID: displayID, cache: cache)
+        guard let state, age < 1.3 || waitingForBrightness else {
+            finished = true
+            panel.orderOut(nil)
+            flock(owner, LOCK_UN)
+            app.stop(nil)
+            // Wake NSApplication.run even when no user event is pending.
+            if let event = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                                              modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                              context: nil, subtype: 0, data1: 0, data2: 0) {
+                app.postEvent(event, atStart: true)
+            }
+            return
+        }
+        if lastUpdate != state.updatedAt {
+            lastUpdate = state.updatedAt
+            view.update(percentage: state.percentage)
+            if !panel.isVisible { panel.orderFrontRegardless() }
+        }
+    }
+    refresh()
+    guard !finished else { return }
+    let timer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { _ in refresh() }
+    defer { timer.invalidate(); panel.orderOut(nil) }
+    app.run()
+}
+
 // MARK: - Arguments
 let usage = "Usage: display-brightness [--background] [list|get|up|down] [display-id]"
 var arguments = Array(CommandLine.arguments.dropFirst())
 let background = arguments.first == "--background"
 if background { arguments.removeFirst() }
 if arguments == ["--help"] || arguments == ["-h"] { print(usage); exit(0) }
+if !background, arguments.count == 2, arguments[0] == "--toast", let id = UInt32(arguments[1]) {
+    do {
+        let cache = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Caches/CapsLock-Pro", isDirectory: true)
+        try runBrightnessToast(displayID: id, cache: cache)
+        exit(0)
+    } catch { writeStderr("display-brightness: \(error)"); exit(1) }
+}
 guard (1...2).contains(arguments.count), ["list", "get", "up", "down"].contains(arguments[0]),
       arguments.count == 1 || (arguments[0] != "list" && UInt32(arguments[1]) != nil) else {
     writeStderr(usage); exit(2)
@@ -285,6 +478,10 @@ func run() throws {
     guard let id = screenID(screen) else { throw BrightnessError("无法识别显示器") }
     let cache = home.appendingPathComponent("Library/Caches/CapsLock-Pro", isDirectory: true)
     try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+    if arguments[0] != "get" {
+        do { try keepBrightnessToastVisible(displayID: id, cache: cache) }
+        catch { writeStderr("display-brightness: 无法延长亮度提示：\(error)") }
+    }
     let lock = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-\(id).lock").path)
     defer { close(lock) }
     let display = try DDCDisplay(displayID: id, api: DisplayAPI())
@@ -293,6 +490,11 @@ func run() throws {
     if arguments[0] != "get" {
         current = original.adjusted(direction: arguments[0] == "up" ? 1 : -1)
         if current != original.current { try display.setBrightness(current) }
+        do {
+            try showBrightnessToast(Brightness(current: current, maximum: original.maximum), displayID: id, cache: cache)
+        } catch {
+            writeStderr("display-brightness: 无法显示亮度提示：\(error)")
+        }
     }
     print("\(screen.localizedName): \(current)/\(original.maximum)")
     #endif
