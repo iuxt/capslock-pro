@@ -164,7 +164,9 @@ function run(argv) {
     const managedDescriptions = new Set(
         descriptionsFrom(source.rules).concat(descriptionsFrom(previousRules), [
             // 即使旧资源文件已被删除，也要替换会在单按时开启大写的旧规则。
-            'CAPSLOCK + hjkl to arrow keys (Post CAPSLOCK if press CAPSLOCK alone)'
+            'CAPSLOCK + hjkl to arrow keys (Post CAPSLOCK if press CAPSLOCK alone)',
+            // 从旧的括号亮度快捷键迁移，即使旧资源文件已被删除。
+            'CAPSLOCK + [ / ] to decrease / increase external display hardware brightness'
         ])
     );
     const selectedProfiles = (config.profiles || []).filter(function (profile) {

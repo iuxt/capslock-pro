@@ -85,6 +85,12 @@ class MacOSTests(unittest.TestCase):
             source = json.loads((ROOT / "macOS/Karabiner-Elements.json").read_text())
             old_rules = json.loads(json.dumps(source["rules"]))
             old_rules[0]["description"] = "CAPSLOCK + hjkl to arrow keys (Post CAPSLOCK if press CAPSLOCK alone)"
+            for rule in old_rules:
+                if any("display-brightness" in event.get("shell_command", "")
+                       for m in rule["manipulators"] for event in m.get("to", [])):
+                    rule["description"] = "CAPSLOCK + [ / ] to decrease / increase external display hardware brightness"
+                    for m in rule["manipulators"]:
+                        m["from"]["key_code"] = {"f1": "open_bracket", "f2": "close_bracket"}[m["from"]["key_code"]]
             custom = {"description": "Unrelated", "manipulators": []}
             config = {"profiles": [
                 {"selected": True, "complex_modifications": {"rules": [custom] + old_rules}},
@@ -120,7 +126,7 @@ class MacOSTests(unittest.TestCase):
 
             brightness_binary = bin_dir / "display-brightness"
             brightness_binary.write_text(binary.read_text())
-            for key, direction in [("open_bracket", "down"), ("close_bracket", "up")]:
+            for key, direction in [("f1", "down"), ("f2", "up")]:
                 manipulator = next(m for rule in installed["rules"] for m in rule["manipulators"]
                                    if m["from"]["key_code"] == key)
                 self.assertIn({"name": "caps_lock pressed", "type": "variable_if", "value": 1},
@@ -145,6 +151,36 @@ class MacOSTests(unittest.TestCase):
     def test_toast_activity_during_pending_brightness(self):
         result = self.run_command([self.brightness_harness, "toast-activity", self.directory / "toast-cache"])
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_brightness_preview_and_debounce(self):
+        result = self.run_command([self.brightness_harness, "debounce", self.directory / "debounce-cache"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_brightness_coalesces_across_processes(self):
+        cache = self.directory / "concurrent-brightness"
+        cache.mkdir()
+        producers = [subprocess.Popen([self.brightness_harness, "enqueue", cache]) for _ in range(8)]
+        try:
+            for producer in producers:
+                self.assertEqual(producer.wait(timeout=5), 0)
+            workers = [subprocess.Popen([self.brightness_harness, "apply-mock", cache]) for _ in range(2)]
+            try:
+                for worker in workers:
+                    self.assertEqual(worker.wait(timeout=5), 0)
+            finally:
+                for worker in workers:
+                    if worker.poll() is None:
+                        worker.kill()
+                        worker.wait(timeout=5)
+            self.assertEqual((cache / "writes").read_text().splitlines(), ["90"])
+            toast = json.loads((cache / "brightness-toast-42.json").read_text())
+            self.assertEqual(toast["percentage"], 90)
+            self.assertFalse(toast["pending"])
+        finally:
+            for producer in producers:
+                if producer.poll() is None:
+                    producer.kill()
+                    producer.wait(timeout=5)
 
     def test_brightness_serializes_updates(self):
         counter = self.directory / "counter"
