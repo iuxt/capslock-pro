@@ -4,6 +4,9 @@ case "protocol":
     // Captured response from the HDMI monitor, followed by checksum-preserving semantic errors.
     let valid: [UInt8] = [0x6e, 0x88, 0x02, 0, 0x10, 0, 0, 100, 0, 70, 0x86, 0]
     precondition(try! decodeBrightness(valid) == Brightness(current: 70, maximum: 100))
+    // Captured AOC Q2790 HDMI response after correcting the Get VCP checksum.
+    let aocReply: [UInt8] = [0x6e, 0x88, 0x02, 0, 0x10, 0, 0, 100, 0, 80, 0x90, 0]
+    precondition(try! decodeBrightness(aocReply) == Brightness(current: 80, maximum: 100))
     for index in 0..<11 {
         var bad = valid
         bad[index] ^= 1
@@ -26,7 +29,7 @@ case "protocol":
     precondition(Brightness(current: 0, maximum: 100).percentage == 0)
     precondition(Brightness(current: 100, maximum: 100).percentage == 100)
     // Fixed wire vectors, including a command whose checksum ends in zero.
-    precondition(brightnessPacket(value: nil) == [0x82, 0x01, 0x10, 0xfd])
+    precondition(brightnessPacket(value: nil) == [0x82, 0x01, 0x10, 0xac])
     precondition(brightnessPacket(value: 65) == [0x84, 0x03, 0x10, 0, 65, 0xe9])
     precondition(brightnessPacket(value: 168) == [0x84, 0x03, 0x10, 0, 168, 0])
     print("protocol passed")

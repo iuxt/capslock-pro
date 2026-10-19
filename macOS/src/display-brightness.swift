@@ -98,13 +98,12 @@ func decodeBrightness(_ bytes: [UInt8]) throws -> Brightness {
 
 func brightnessPacket(value: UInt16?) -> [UInt8] {
     var bytes: [UInt8]
-    let seed: UInt8
+    // Both Get VCP and Set VCP checksums include destination (0x6e) and source (0x51).
+    let seed: UInt8 = 0x6e ^ 0x51
     if let value {
         bytes = [0x84, 0x03, 0x10, UInt8(value >> 8), UInt8(value & 0xff)]
-        seed = 0x6e ^ 0x51
     } else {
         bytes = [0x82, 0x01, 0x10]
-        seed = 0x6e
     }
     bytes.append(bytes.reduce(seed, ^))
     return bytes
