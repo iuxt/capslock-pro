@@ -8,6 +8,9 @@ rules_source="$script_dir/Karabiner-Elements.json"
 bin_dir="${CAPSLOCK_PRO_BIN_DIR:-$HOME/.local/bin}"
 karabiner_config="${CAPSLOCK_PRO_KARABINER_CONFIG:-$HOME/.config/karabiner/karabiner.json}"
 assets_dir="${CAPSLOCK_PRO_KARABINER_ASSETS_DIR:-$HOME/.config/karabiner/assets/complex_modifications}"
+launch_agents_dir="${CAPSLOCK_PRO_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
+logs_dir="${CAPSLOCK_PRO_LOGS_DIR:-$HOME/Library/Logs/CapsLock-Pro}"
+agent_label="local.capslock-pro.brightness-restore"
 force_rebuild=false
 
 if [ "${1:-}" = "--force" ]; then
@@ -44,8 +47,9 @@ temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/capslock-pro.XXXXXX")"
 temporary_binary="$temporary_directory/move-window-display"
 brightness_path="$bin_dir/display-brightness"
 temporary_rules="$temporary_directory/capslock-pro.json"
+temporary_agent="$temporary_directory/brightness-restore.plist"
 cleanup() {
-    rm -f "$temporary_directory/move-window-display" "$temporary_directory/display-brightness" "$temporary_rules"
+    rm -f "$temporary_directory/move-window-display" "$temporary_directory/display-brightness" "$temporary_rules" "$temporary_agent"
     rmdir "$temporary_directory" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -81,7 +85,8 @@ cp -p "$karabiner_config" "$config_backup"
 
 printf '正在更新 Karabiner 当前 profile……\n'
 sync_result="$(/usr/bin/osascript -l JavaScript - \
-    "$rules_source" "$asset_path" "$karabiner_config" "$binary_path" "$temporary_rules" "$brightness_path" <<'JXA'
+    "$rules_source" "$asset_path" "$karabiner_config" "$binary_path" "$temporary_rules" "$brightness_path" \
+    "$temporary_agent" "$logs_dir/brightness.log" "$agent_label" <<'JXA'
 ObjC.import('Foundation');
 
 function readText(path) {
@@ -160,6 +165,16 @@ function run(argv) {
     }
 
     writeTextAtomically(renderedRulesPath, JSON.stringify(source, null, 4) + '\n');
+    writeTextAtomically(argv[6], JSON.stringify({
+        Label: argv[8],
+        ProgramArguments: [argv[5], '--watch'],
+        RunAtLoad: true,
+        KeepAlive: true,
+        LimitLoadToSessionType: 'Aqua',
+        ThrottleInterval: 10,
+        StandardOutPath: argv[7],
+        StandardErrorPath: argv[7]
+    }) + '\n');
 
     const managedDescriptions = new Set(
         descriptionsFrom(source.rules).concat(descriptionsFrom(previousRules), [
@@ -212,6 +227,15 @@ JXA
 chmod "$config_mode" "$karabiner_config"
 install -m 0644 "$temporary_rules" "$asset_path"
 
+# 登录后监听亮屏、唤醒和显示器重连；替换旧进程以载入新编译的程序。
+mkdir -p "$launch_agents_dir" "$logs_dir"
+agent_path="$launch_agents_dir/$agent_label.plist"
+/usr/bin/plutil -convert xml1 "$temporary_agent"
+install -m 0644 "$temporary_agent" "$agent_path"
+agent_domain="gui/$(id -u)"
+launchctl bootout "$agent_domain/$agent_label" >/dev/null 2>&1 || true
+launchctl bootstrap "$agent_domain" "$agent_path"
+
 if [ "$sync_result" = "updated" ]; then
     printf 'Karabiner 配置已更新。\n'
 else
@@ -219,5 +243,6 @@ else
 fi
 printf 'Swift 可执行文件：%s\n' "$binary_path"
 printf '亮度可执行文件：%s\n' "$brightness_path"
+printf '亮度唤醒恢复服务：%s\n' "$agent_path"
 printf 'Karabiner 规则资源：%s\n' "$asset_path"
 printf '配置备份：%s\n' "$config_backup"
