@@ -2,7 +2,6 @@
 """macOS 回归测试：仅操作临时文件和测试进程，不改变真实窗口或 Karabiner 配置。"""
 import json
 import os
-import plistlib
 from pathlib import Path
 import shutil
 import signal
@@ -111,13 +110,32 @@ class MacOSTests(unittest.TestCase):
             shim_dir = directory / "shims"
             shim_dir.mkdir()
             launchctl = shim_dir / "launchctl"
-            launchctl.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$CAPSLOCK_TEST_LAUNCHCTL"\n')
+            launchctl.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$@" >> "$CAPSLOCK_TEST_LAUNCHCTL"\n'
+                'case "$1" in\n'
+                '  print) test -f "$HOME/service-loaded" ;;\n'
+                '  bootout) rm "$HOME/service-loaded" ;;\n'
+                '  *) exit 1 ;;\nesac\n')
             launchctl.chmod(0o755)
-            env = dict(os.environ, CAPSLOCK_PRO_BIN_DIR=bin_dir.name,
+            (directory / "service-loaded").touch()
+            label = "local.capslock-pro.brightness-restore"
+            agent_path = directory / "Launch Agents" / (label + ".plist")
+            agent_path.parent.mkdir()
+            agent_path.touch()
+            prefs = directory / "Library/Application Support/CapsLock-Pro/Brightness"
+            prefs.mkdir(parents=True)
+            saved = prefs / "01234567-89AB-CDEF-0123-456789ABCDEF.json"
+            saved.touch()
+            unrelated = prefs / "user.json"
+            unrelated.touch()
+            cache = directory / "Library/Caches/CapsLock-Pro"
+            cache.mkdir(parents=True)
+            (cache / "brightness-watcher.lock").touch()
+            (cache / "brightness-toast-42.json").touch()
+            env = dict(os.environ, HOME=str(directory), CAPSLOCK_PRO_BIN_DIR=bin_dir.name,
                        CAPSLOCK_PRO_KARABINER_CONFIG=str(config_path),
                        CAPSLOCK_PRO_KARABINER_ASSETS_DIR=str(directory / "assets"),
                        CAPSLOCK_PRO_LAUNCH_AGENTS_DIR=str(directory / "Launch Agents"),
-                       CAPSLOCK_PRO_LOGS_DIR=str(directory / "logs"),
                        CAPSLOCK_TEST_LAUNCHCTL=str(directory / "launchctl-calls"),
                        PATH=str(shim_dir) + os.pathsep + os.environ["PATH"])
             for iteration in range(2):
@@ -133,16 +151,14 @@ class MacOSTests(unittest.TestCase):
             self.assertEqual(updated["profiles"][0]["complex_modifications"]["rules"], [custom] + installed["rules"])
             self.assertEqual(updated["profiles"][1], config["profiles"][1])
             self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
-            agent_path = directory / "Launch Agents/local.capslock-pro.brightness-restore.plist"
-            agent = plistlib.loads(agent_path.read_bytes())
-            self.assertEqual(agent["ProgramArguments"], [str((bin_dir / "display-brightness").resolve()), "--watch"])
-            self.assertTrue(agent["RunAtLoad"])
-            self.assertTrue(agent["KeepAlive"])
-            self.assertEqual(agent["LimitLoadToSessionType"], "Aqua")
-            self.assertEqual(agent["StandardErrorPath"], str(directory / "logs/brightness.log"))
+            self.assertFalse(agent_path.exists())
+            self.assertFalse(saved.exists())
+            self.assertTrue(unrelated.is_file())
+            self.assertFalse((cache / "brightness-watcher.lock").exists())
+            self.assertTrue((cache / "brightness-toast-42.json").is_file())
+            service = f"gui/{os.getuid()}/{label}"
             calls = (directory / "launchctl-calls").read_text().splitlines()
-            self.assertEqual(calls, ["bootout", f"gui/{os.getuid()}/{agent['Label']}",
-                                     "bootstrap", f"gui/{os.getuid()}", str(agent_path)] * 2)
+            self.assertEqual(calls, ["print", service, "bootout", service, "print", service])
             # 执行实际生成的 shell 文本，以确认路径转义和参数传递。
             binary.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPSLOCK_TEST_ARGS"\n')
             marker = directory / "arguments"
@@ -188,7 +204,7 @@ class MacOSTests(unittest.TestCase):
                 config.write_text(original)
                 for iteration in range(2):
                     result = self.run_command(["/usr/bin/python3", ROOT / "macOS/sync_rules.py", source,
-                                               assets, config, d, d / "agent.plist", d / "log", "test.agent"])
+                                               assets, config, d])
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual((assets / "capslock-pro.json").read_bytes(), foreign)
                     self.assertEqual(Path(str(config) + ".capslock-pro.backup").read_text(), original)
@@ -213,7 +229,7 @@ class MacOSTests(unittest.TestCase):
         result = self.run_command([self.brightness_harness, "protocol"])
         self.assertEqual(result.returncode, 0, result.stderr)
         for args, expected in [(["--help"], 0), (["--background", "--help"], 0),
-                               ([], 2), (["invalid"], 2), (["get", "invalid"], 2),
+                               ([], 2), (["invalid"], 2), (["--watch"], 2), (["get", "invalid"], 2),
                                (["get", "-1"], 2), (["list", "3"], 2), (["up", "3", "extra"], 2)]:
             result = self.run_command([self.brightness, *args])
             self.assertEqual(result.returncode, expected, result.stderr)
@@ -222,12 +238,19 @@ class MacOSTests(unittest.TestCase):
         result = self.run_command([self.brightness_harness, "toast-activity", self.directory / "toast-cache"])
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_viewer_exits_when_toast_is_no_longer_visible(self):
+        result = subprocess.run([self.brightness_harness, "expired-toast", self.directory / "expired-toast"],
+                                text=True, capture_output=True, timeout=5)
+        if result.returncode == 77:
+            self.skipTest("No display in this session")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_brightness_preview_and_debounce(self):
         result = self.run_command([self.brightness_harness, "debounce", self.directory / "debounce-cache"])
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_brightness_persistence_and_wake_restore(self):
-        result = self.run_command([self.brightness_harness, "restore", self.directory / "restore-cache"])
+    def test_abandoned_brightness_request_is_not_replayed(self):
+        result = self.run_command([self.brightness_harness, "abandoned", self.directory / "abandoned-cache"])
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_brightness_coalesces_across_processes(self):

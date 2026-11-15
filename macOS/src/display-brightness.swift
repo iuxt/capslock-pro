@@ -525,166 +525,6 @@ func applyBrightnessAdjustments(displayID: UInt32, cache: URL, lease: Brightness
     }
 }
 
-// MARK: - Persistent brightness and wake restoration
-
-func brightnessPreferencesDirectory() -> URL {
-    FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/CapsLock-Pro/Brightness", isDirectory: true)
-}
-
-// CG display IDs can change after reconnecting. Never persist them as monitor identities.
-func persistentDisplayID(_ displayID: UInt32) -> UUID? {
-    guard let uuid = CGDisplayCreateUUIDFromDisplayID(displayID)?.takeRetainedValue() else { return nil }
-    return UUID(uuidString: CFUUIDCreateString(kCFAllocatorDefault, uuid) as String)
-}
-
-struct SavedBrightness {
-    let directory: URL
-    let identity: UUID
-
-    var file: URL { directory.appendingPathComponent(identity.uuidString + ".json") }
-
-    func load() throws -> Brightness? {
-        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
-        let brightness = try JSONDecoder().decode(Brightness.self, from: Data(contentsOf: file))
-        guard brightness.maximum > 0, brightness.current <= brightness.maximum else {
-            throw BrightnessError("保存的显示器亮度范围无效")
-        }
-        return brightness
-    }
-
-    // Called only after successful hardware readback, while holding the display's DDC lock.
-    func save(_ brightness: Brightness) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(brightness).write(to: file, options: .atomic)
-    }
-}
-
-func writeRememberedBrightness(_ value: UInt16, saved: SavedBrightness?,
-                               write: (UInt16) throws -> Brightness) throws {
-    let confirmed = try write(value)
-    guard let saved else {
-        writeStderr("display-brightness: 无法取得显示器持久标识，未保存亮度")
-        return
-    }
-    do { try saved.save(confirmed) }
-    catch { writeStderr("display-brightness: 无法保存亮度：\(error)") }
-}
-
-/// Each retry loads the newest saved value. Restoration never overwrites the saved preference.
-func restoreBrightness(displayID: UInt32, cache: URL, saved: SavedBrightness,
-                       read: () throws -> Brightness, write: (UInt16) throws -> Void) throws {
-    let lock = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-\(displayID).lock").path)
-    defer { close(lock) }
-    let paths = BrightnessAdjustmentPaths(cache: cache, displayID: displayID)
-    do {
-        let gate = try acquireBrightnessLock(at: paths.gate)
-        defer { close(gate) }
-        let state = try paths.load()
-        // Let a current shortcut finish, including its debounce/read/write cycle.
-        if state.pending, try BrightnessWorkerLease(claiming: paths.owner) == nil { return }
-    }
-    guard let desired = try saved.load() else { return }
-    let actual = try read()
-    let target = UInt16((Double(desired.current) / Double(desired.maximum) * Double(actual.maximum)).rounded())
-    if actual.current != target { try write(target) }
-}
-
-/// A bounded retry window covers monitors whose DDC service becomes ready slowly after wake.
-struct BrightnessRestorePlan {
-    private(set) var deadlines: [Double] = []
-    private(set) var sleeping = false
-
-    mutating func schedule(now: Double) {
-        guard !sleeping else { return }
-        deadlines = [1, 3, 8, 15, 30].map { now + $0 }
-    }
-
-    mutating func suspend() { sleeping = true; deadlines = [] }
-    mutating func wake(now: Double) { sleeping = false; schedule(now: now) }
-
-    mutating func takeDue(now: Double) -> Bool {
-        guard deadlines.first.map({ $0 <= now }) == true else { return false }
-        deadlines.removeAll { $0 <= now }
-        return true
-    }
-}
-
-func restoreConnectedBrightness(cache: URL) {
-    var displays = [CGDirectDisplayID](repeating: 0, count: 32)
-    var count: UInt32 = 0
-    guard CGGetOnlineDisplayList(UInt32(displays.count), &displays, &count) == .success else { return }
-    for id in displays.prefix(Int(count)) where CGDisplayIsBuiltin(id) == 0 && CGDisplayIsAsleep(id) == 0 {
-        guard let identity = persistentDisplayID(id) else { continue }
-        let saved = SavedBrightness(directory: brightnessPreferencesDirectory(), identity: identity)
-        guard FileManager.default.fileExists(atPath: saved.file.path) else { continue }
-        do {
-            var display: DDCDisplay?
-            func connectedDisplay() throws -> DDCDisplay {
-                if let display { return display }
-                let connected = try DDCDisplay(displayID: id, api: DisplayAPI())
-                display = connected
-                return connected
-            }
-            try restoreBrightness(displayID: id, cache: cache, saved: saved,
-                                  read: { try connectedDisplay().brightness() },
-                                  write: { _ = try connectedDisplay().setBrightness($0) })
-        } catch { writeStderr("display-brightness: 恢复显示器 \(id) 亮度失败：\(error)") }
-    }
-}
-
-func runBrightnessWatcher(cache: URL) throws {
-    try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-    let owner = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-watcher.lock").path,
-                                          timeout: 0)
-    defer { close(owner) }
-    let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)
-    let workspace = NSWorkspace.shared.notificationCenter
-    let center = NotificationCenter.default
-    var plan = BrightnessRestorePlan()
-    var busy = false
-    var timer: Timer?
-    let queue = DispatchQueue(label: "CapsLock-Pro.brightness-restore", qos: .utility)
-    func armTimer() {
-        timer?.invalidate()
-        timer = nil
-        guard !busy, let next = plan.deadlines.first else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: max(0.1, next - ProcessInfo.processInfo.systemUptime),
-                                     repeats: false) { _ in
-            guard plan.takeDue(now: ProcessInfo.processInfo.systemUptime) else { armTimer(); return }
-            busy = true
-            queue.async {
-                restoreConnectedBrightness(cache: cache)
-                DispatchQueue.main.async { busy = false; armTimer() }
-            }
-        }
-    }
-    var observers: [(NotificationCenter, NSObjectProtocol)] = []
-    for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
-        observers.append((workspace, workspace.addObserver(forName: name, object: nil, queue: .main) { _ in
-            plan.suspend()
-            armTimer()
-        }))
-    }
-    for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
-        observers.append((workspace, workspace.addObserver(forName: name, object: nil, queue: .main) { _ in
-            plan.wake(now: ProcessInfo.processInfo.systemUptime)
-            armTimer()
-        }))
-    }
-    observers.append((center, center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
-                                                object: nil, queue: .main) { _ in
-        plan.schedule(now: ProcessInfo.processInfo.systemUptime)
-        armTimer()
-    }))
-    defer { observers.forEach { $0.0.removeObserver($0.1) } }
-    plan.schedule(now: ProcessInfo.processInfo.systemUptime)
-    armTimer()
-    defer { timer?.invalidate() }
-    app.run()
-}
-
 final class BrightnessToastView: NSVisualEffectView {
     private let valueLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "亮度")
@@ -741,6 +581,11 @@ final class BrightnessToastView: NSVisualEffectView {
     }
 }
 
+// The viewer only lives while it has something to display. Bound stalled DDC activity too.
+func shouldDisplayToast(age: Double, pending: Bool, operationIsRunning: @autoclosure () -> Bool) -> Bool {
+    age >= 0 && (age < 1.3 || (pending && age < 5 && operationIsRunning()))
+}
+
 func runBrightnessToast(displayID: UInt32, cache: URL) throws {
     let paths = BrightnessToastPaths(directory: cache, displayID: displayID)
     let owner: Int32
@@ -780,9 +625,8 @@ func runBrightnessToast(displayID: UInt32, cache: URL) throws {
         defer { close(gate) }
         let state = (try? Data(contentsOf: paths.state)).flatMap { try? JSONDecoder().decode(BrightnessToastState.self, from: $0) }
         let age = state.map { ProcessInfo.processInfo.systemUptime - $0.updatedAt } ?? .infinity
-        // Keep the same panel alive during a pending read/write. Cap stale activity if DDC stalls.
-        let waitingForBrightness = age < 5 && brightnessOperationIsRunning(displayID: displayID, cache: cache)
-        guard let state, age < 60 else {
+        guard let state, shouldDisplayToast(age: age, pending: state.pending == true,
+                                            operationIsRunning: brightnessOperationIsRunning(displayID: displayID, cache: cache)) else {
             finished = true
             panel.orderOut(nil)
             flock(owner, LOCK_UN)
@@ -793,11 +637,6 @@ func runBrightnessToast(displayID: UInt32, cache: URL) throws {
                                               context: nil, subtype: 0, data1: 0, data2: 0) {
                 app.postEvent(event, atStart: true)
             }
-            return
-        }
-        guard age < 1.3 || waitingForBrightness else {
-            // Retain the AppKit window briefly for fast reappearance on the next key press.
-            if panel.isVisible { panel.orderOut(nil) }
             return
         }
         if lastUpdate != state.updatedAt {
@@ -814,19 +653,11 @@ func runBrightnessToast(displayID: UInt32, cache: URL) throws {
 }
 
 // MARK: - Arguments
-let usage = "Usage: display-brightness [--background] [list|get|up|down] [display-id]\n       display-brightness --watch"
+let usage = "Usage: display-brightness [--background] [list|get|up|down] [display-id]"
 var arguments = Array(CommandLine.arguments.dropFirst())
 let background = arguments.first == "--background"
 if background { arguments.removeFirst() }
 if arguments == ["--help"] || arguments == ["-h"] { print(usage); exit(0) }
-if !background, arguments == ["--watch"] {
-    do {
-        let cache = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Caches/CapsLock-Pro", isDirectory: true)
-        try runBrightnessWatcher(cache: cache)
-        exit(0)
-    } catch { writeStderr("display-brightness: \(error)"); exit(1) }
-}
 if !background, arguments.count == 2, arguments[0] == "--toast", let id = UInt32(arguments[1]) {
     do {
         let cache = FileManager.default.homeDirectoryForCurrentUser
@@ -861,12 +692,7 @@ func runBrightnessAdjustmentWorker(displayID: UInt32, cache: URL, lease: Brightn
     }
     try applyBrightnessAdjustments(displayID: displayID, cache: cache, lease: lease,
                                    read: { try withDisplay { try $0.brightness() } },
-                                   write: { value in try withDisplay {
-        let saved = persistentDisplayID(displayID).map {
-            SavedBrightness(directory: brightnessPreferencesDirectory(), identity: $0)
-        }
-        try writeRememberedBrightness(value, saved: saved, write: $0.setBrightness)
-    } })
+                                   write: { value in _ = try withDisplay { try $0.setBrightness(value) } })
 }
 
 func run() throws {

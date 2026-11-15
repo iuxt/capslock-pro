@@ -2,7 +2,6 @@
 import json
 import os
 from pathlib import Path
-import plistlib
 import re
 import stat
 import sys
@@ -122,7 +121,7 @@ def atomic_write(path, data, mode, exclusive=False):
             tmp.unlink()
 
 
-def sync(source_path, assets, config, bin_dir, agent_path, log_path, label):
+def sync(source_path, assets, config, bin_dir):
     source = json.loads(source_path.read_bytes())
     previous = []
     asset = None
@@ -171,12 +170,8 @@ def sync(source_path, assets, config, bin_dir, agent_path, log_path, label):
         print('Karabiner 配置已经是最新版本。')
     if asset.read_bytes() != rendered:
         atomic_write(asset, rendered, 0o644)
-    agent_path.write_bytes(plistlib.dumps(dict(
-        Label=label, ProgramArguments=[str(bin_dir / 'display-brightness'), '--watch'],
-        RunAtLoad=True, KeepAlive=True, LimitLoadToSessionType='Aqua', ThrottleInterval=10,
-        StandardOutPath=str(log_path), StandardErrorPath=str(log_path))))
     print('Karabiner 规则资源：' + str(asset))
 
 
 if __name__ == '__main__':
-    sync(*(Path(arg) for arg in sys.argv[1:-1]), sys.argv[-1])
+    sync(*map(Path, sys.argv[1:]))

@@ -66,7 +66,23 @@ case "toast-activity":
     precondition(brightnessOperationIsRunning(displayID: 42, cache: cache))
     close(fd)
     precondition(!brightnessOperationIsRunning(displayID: 42, cache: cache))
+    // Completion closes the viewer at the hide deadline; unrelated DDC reads cannot extend it.
+    precondition(shouldDisplayToast(age: 1.29, pending: false, operationIsRunning: false))
+    precondition(!shouldDisplayToast(age: 1.3, pending: false, operationIsRunning: true))
+    precondition(shouldDisplayToast(age: 2, pending: true, operationIsRunning: true))
+    precondition(!shouldDisplayToast(age: 2, pending: true, operationIsRunning: false))
+    precondition(!shouldDisplayToast(age: 5, pending: true, operationIsRunning: true))
+    precondition(!shouldDisplayToast(age: -1, pending: false, operationIsRunning: false))
     print("toast activity passed")
+case "expired-toast":
+    // Run the actual viewer against a recent but already-hidden toast. No panel is shown.
+    guard let id = NSScreen.screens.first.flatMap(screenID) else { exit(77) }
+    let cache = URL(fileURLWithPath: testArguments[1], isDirectory: true)
+    try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+    let paths = BrightnessToastPaths(directory: cache, displayID: id)
+    let state = BrightnessToastState(percentage: 50, updatedAt: ProcessInfo.processInfo.systemUptime - 2)
+    try JSONEncoder().encode(state).write(to: paths.state, options: .atomic)
+    try runBrightnessToast(displayID: id, cache: cache)
 case "debounce":
     let root = URL(fileURLWithPath: testArguments[1], isDirectory: true)
     func directory(_ name: String) throws -> URL {
@@ -167,118 +183,19 @@ case "debounce":
                                    write: { precondition($0 == 43) }, now: { clock }, wait: { clock += 0.01 })
     precondition(try! toast(failed).failed == false)
     print("debounce passed")
-case "restore":
-    let root = URL(fileURLWithPath: testArguments[1], isDirectory: true)
-    let cache = root.appendingPathComponent("cache", isDirectory: true)
-    let preferences = root.appendingPathComponent("preferences", isDirectory: true)
+case "abandoned":
+    let cache = URL(fileURLWithPath: testArguments[1], isDirectory: true)
     try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-    let first = SavedBrightness(directory: preferences, identity: UUID())
-    let second = SavedBrightness(directory: preferences, identity: UUID())
-    precondition(try! first.load() == nil)
-    var writes: [UInt16] = []
-    // No saved preference: don't read or change this monitor.
-    try restoreBrightness(displayID: 42, cache: cache, saved: first,
-                          read: { fatalError("Unexpected monitor read") },
-                          write: { _ in fatalError("Unexpected monitor write") })
-    try writeRememberedBrightness(35, saved: first, write: {
-        Brightness(current: $0, maximum: 100)
-    })
-    try second.save(Brightness(current: 80, maximum: 100))
-    // A new process instance finds the same preference by UUID, regardless of transient ID.
-    let reconnected = SavedBrightness(directory: preferences, identity: first.identity)
-    try restoreBrightness(displayID: 99, cache: cache, saved: reconnected,
-                          read: { Brightness(current: 100, maximum: 100) },
-                          write: { writes.append($0) })
-    precondition(writes == [35])
-    try restoreBrightness(displayID: 42, cache: cache, saved: second,
-                          read: { Brightness(current: 100, maximum: 100) },
-                          write: { writes.append($0) })
-    precondition(writes == [35, 80])
-    // An already correct brightness produces no DDC write. Scale if hardware range changes.
-    try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                          read: { Brightness(current: 35, maximum: 100) },
-                          write: { _ in fatalError("Redundant write") })
-    try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                          read: { Brightness(current: 100, maximum: 200) },
-                          write: { precondition($0 == 70) })
-    // Hardware write/verification failures must never replace the last successful setting.
-    do {
-        try writeRememberedBrightness(60, saved: first, write: { _ in
-            throw BrightnessError("Simulated verification failure")
-        })
-        fatalError("Expected write failure")
-    } catch {}
-    precondition(try! first.load() == Brightness(current: 35, maximum: 100))
-    do {
-        try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                              read: { throw BrightnessError("DDC not ready after wake") },
-                              write: { _ in fatalError("Unexpected write") })
-        fatalError("Expected read failure")
-    } catch {}
-    do {
-        try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                              read: { Brightness(current: 100, maximum: 100) },
-                              write: { _ in throw BrightnessError("DDC write failed after wake") })
-        fatalError("Expected restore failure")
-    } catch {}
-    precondition(try! first.load() == Brightness(current: 35, maximum: 100))
-    // A later retry must fetch a new user setting instead of a target captured at wake.
-    try writeRememberedBrightness(45, saved: first, write: { Brightness(current: $0, maximum: 100) })
-    try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                          read: { Brightness(current: 100, maximum: 100) },
-                          write: { precondition($0 == 45) })
-    precondition(try! second.load() == Brightness(current: 80, maximum: 100))
-    // Current key presses take precedence over background restoration.
+    // A worker dies before acknowledging "up"; a new "down" must act on the hardware reading.
     var owner = try enqueueBrightnessAdjustment(direction: 1, displayID: 99, cache: cache, now: 100)
     precondition(owner != nil)
-    try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                          read: { fatalError("Restore interrupted pending key") },
-                          write: { _ in fatalError("Restore interrupted pending key") })
-    owner = nil  // Simulate a crash before the worker can acknowledge its queue.
-    var restored: [UInt16] = []
-    try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                          read: { Brightness(current: 100, maximum: 100) },
-                          write: { restored.append($0) })
-    precondition(restored == [45])
-    // Even an immediate new press must not replay the dead worker's up key.
+    owner = nil
     let fresh = try enqueueBrightnessAdjustment(direction: -1, displayID: 99, cache: cache, now: 100.1)!
+    var writes: [UInt16] = []
     try applyBrightnessAdjustments(displayID: 99, cache: cache, lease: fresh,
                                   read: { Brightness(current: 80, maximum: 100) },
-                                  write: { restored.append($0) }, now: { 102 })
-    precondition(restored == [45, 75])
-    // Corrupt preferences must fail closed instead of changing a monitor to a guessed value.
-    try Data("{\"current\":101,\"maximum\":100}".utf8).write(to: first.file)
-    do {
-        try restoreBrightness(displayID: 42, cache: cache, saved: first,
-                              read: { fatalError("Invalid preference read hardware") },
-                              write: { _ in fatalError("Invalid preference changed hardware") })
-        fatalError("Invalid saved range accepted")
-    } catch {}
-
-    var plan = BrightnessRestorePlan()
-    plan.schedule(now: 100)
-    precondition(!plan.takeDue(now: 100.9))
-    precondition(plan.takeDue(now: 101))
-    precondition(!plan.takeDue(now: 101))
-    precondition(plan.takeDue(now: 103))
-    precondition(plan.takeDue(now: 108))
-    precondition(plan.takeDue(now: 115))
-    precondition(plan.takeDue(now: 130))
-    precondition(!plan.takeDue(now: 200)) // No endless polling or DDC writes.
-    plan.schedule(now: 200)
-    plan.suspend()
-    plan.schedule(now: 201) // Display reconfiguration while asleep must not start restoration.
-    precondition(!plan.takeDue(now: 202))
-    plan.wake(now: 300)
-    precondition(!plan.takeDue(now: 300.5))
-    precondition(plan.takeDue(now: 301))
-    plan.schedule(now: 302) // Reconnection starts a fresh retry window.
-    precondition(!plan.takeDue(now: 302))
-    precondition(plan.takeDue(now: 310)) // Coalesce overdue attempts after a slow operation.
-    precondition(!plan.takeDue(now: 310))
-    precondition(plan.takeDue(now: 332))
-    precondition(plan.deadlines.isEmpty)
-    print("restore passed")
+                                  write: { writes.append($0) }, now: { 102 })
+    precondition(writes == [75])
 case "enqueue":
     let cache = URL(fileURLWithPath: testArguments[1], isDirectory: true)
     if let lease = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache) {
