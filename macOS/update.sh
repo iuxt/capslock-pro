@@ -46,10 +46,9 @@ binary_path="$bin_dir/move-window-display"
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/capslock-pro.XXXXXX")"
 temporary_binary="$temporary_directory/move-window-display"
 brightness_path="$bin_dir/display-brightness"
-temporary_rules="$temporary_directory/capslock-pro.json"
 temporary_agent="$temporary_directory/brightness-restore.plist"
 cleanup() {
-    rm -f "$temporary_directory/move-window-display" "$temporary_directory/display-brightness" "$temporary_rules" "$temporary_agent"
+    rm -f "$temporary_directory/move-window-display" "$temporary_directory/display-brightness" "$temporary_agent"
     rmdir "$temporary_directory" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -68,181 +67,19 @@ for tool_name in move-window-display display-brightness; do
     fi
 done
 
-rules_title="$(/usr/bin/plutil -extract title raw -o - "$rules_source")"
-asset_path="$assets_dir/capslock-pro.json"
-for candidate in "$assets_dir"/*.json; do
-    [ -f "$candidate" ] || continue
-    candidate_title="$(/usr/bin/plutil -extract title raw -o - "$candidate" 2>/dev/null || true)"
-    if [ "$candidate_title" = "$rules_title" ]; then
-        asset_path="$candidate"
-        break
-    fi
-done
-
-config_mode="$(stat -f '%Lp' "$karabiner_config")"
-config_backup="$karabiner_config.capslock-pro.backup"
-cp -p "$karabiner_config" "$config_backup"
-
 printf '正在更新 Karabiner 当前 profile……\n'
-sync_result="$(/usr/bin/osascript -l JavaScript - \
-    "$rules_source" "$asset_path" "$karabiner_config" "$binary_path" "$temporary_rules" "$brightness_path" \
-    "$temporary_agent" "$logs_dir/brightness.log" "$agent_label" <<'JXA'
-ObjC.import('Foundation');
-
-function readText(path) {
-    const value = $.NSString.stringWithContentsOfFileEncodingError(
-        path,
-        $.NSUTF8StringEncoding,
-        null
-    );
-    if (!value) {
-        throw new Error('无法读取文件：' + path);
-    }
-    return ObjC.unwrap(value);
-}
-
-function readJSON(path) {
-    return JSON.parse(readText(path));
-}
-
-function writeTextAtomically(path, contents) {
-    const written = $(contents).writeToFileAtomicallyEncodingError(
-        path,
-        true,
-        $.NSUTF8StringEncoding,
-        null
-    );
-    if (!written) {
-        throw new Error('无法写入文件：' + path);
-    }
-}
-
-function descriptionsFrom(rules) {
-    return (rules || [])
-        .map(function (rule) { return rule.description; })
-        .filter(function (description) { return typeof description === 'string'; });
-}
-
-function shellQuote(value) {
-    return "'" + value.split("'").join("'\\''") + "'";
-}
-
-function run(argv) {
-    const sourcePath = argv[0];
-    const installedAssetPath = argv[1];
-    const configPath = argv[2];
-    const binaryPath = argv[3];
-    const renderedRulesPath = argv[4];
-    const source = readJSON(sourcePath);
-    const executables = [
-        ['"$HOME/.local/bin/move-window-display"', binaryPath],
-        ['"$HOME/.local/bin/display-brightness"', argv[5]]
-    ];
-    source.rules.forEach(function (rule) {
-        rule.manipulators.forEach(function (manipulator) {
-            (manipulator.to || []).forEach(function (event) {
-                executables.forEach(function (executable) {
-                    if (typeof event.shell_command === 'string' &&
-                        event.shell_command.indexOf(executable[0] + ' ') === 0) {
-                        event.shell_command = shellQuote(executable[1]) +
-                            event.shell_command.slice(executable[0].length);
-                    }
-                });
-            });
-        });
-    });
-    const configText = readText(configPath);
-    const config = JSON.parse(configText);
-
-    let previousRules = [];
-    try {
-        const previousAsset = readJSON(installedAssetPath);
-        if (previousAsset.title === source.title) {
-            previousRules = previousAsset.rules || [];
-        }
-    } catch (_) {
-        // 第一次安装时资源文件尚不存在。
-    }
-
-    writeTextAtomically(renderedRulesPath, JSON.stringify(source, null, 4) + '\n');
-    writeTextAtomically(argv[6], JSON.stringify({
-        Label: argv[8],
-        ProgramArguments: [argv[5], '--watch'],
-        RunAtLoad: true,
-        KeepAlive: true,
-        LimitLoadToSessionType: 'Aqua',
-        ThrottleInterval: 10,
-        StandardOutPath: argv[7],
-        StandardErrorPath: argv[7]
-    }) + '\n');
-
-    const managedDescriptions = new Set(
-        descriptionsFrom(source.rules).concat(descriptionsFrom(previousRules), [
-            // 即使旧资源文件已被删除，也要替换会在单按时开启大写的旧规则。
-            'CAPSLOCK + hjkl to arrow keys (Post CAPSLOCK if press CAPSLOCK alone)',
-            // 从旧的括号亮度快捷键迁移，即使旧资源文件已被删除。
-            'CAPSLOCK + [ / ] to decrease / increase external display hardware brightness'
-        ])
-    );
-    const selectedProfiles = (config.profiles || []).filter(function (profile) {
-        return profile.selected === true;
-    });
-    if (selectedProfiles.length === 0) {
-        throw new Error('Karabiner 配置中没有当前选中的 profile');
-    }
-
-    selectedProfiles.forEach(function (profile) {
-        if (!profile.complex_modifications) {
-            profile.complex_modifications = {};
-        }
-        const existingRules = profile.complex_modifications.rules || [];
-        const firstManagedIndex = existingRules.findIndex(function (rule) {
-            return managedDescriptions.has(rule.description);
-        });
-        const insertAt = firstManagedIndex < 0
-            ? existingRules.length
-            : existingRules.slice(0, firstManagedIndex).filter(function (rule) {
-                return !managedDescriptions.has(rule.description);
-            }).length;
-        const unmanagedRules = existingRules.filter(function (rule) {
-            return !managedDescriptions.has(rule.description);
-        });
-        const replacementRules = JSON.parse(JSON.stringify(source.rules || []));
-        unmanagedRules.splice.apply(
-            unmanagedRules,
-            [insertAt, 0].concat(replacementRules)
-        );
-        profile.complex_modifications.rules = unmanagedRules;
-    });
-
-    const updatedText = JSON.stringify(config, null, 4) + '\n';
-    if (updatedText !== configText) {
-        writeTextAtomically(configPath, updatedText);
-        return 'updated';
-    }
-    return 'unchanged';
-}
-JXA
-)"
-chmod "$config_mode" "$karabiner_config"
-install -m 0644 "$temporary_rules" "$asset_path"
+/usr/bin/python3 "$script_dir/sync_rules.py" "$rules_source" "$assets_dir" "$karabiner_config" \
+    "$bin_dir" "$temporary_agent" "$logs_dir/brightness.log" "$agent_label"
 
 # 登录后监听亮屏、唤醒和显示器重连；替换旧进程以载入新编译的程序。
 mkdir -p "$launch_agents_dir" "$logs_dir"
 agent_path="$launch_agents_dir/$agent_label.plist"
-/usr/bin/plutil -convert xml1 "$temporary_agent"
 install -m 0644 "$temporary_agent" "$agent_path"
 agent_domain="gui/$(id -u)"
 launchctl bootout "$agent_domain/$agent_label" >/dev/null 2>&1 || true
 launchctl bootstrap "$agent_domain" "$agent_path"
 
-if [ "$sync_result" = "updated" ]; then
-    printf 'Karabiner 配置已更新。\n'
-else
-    printf 'Karabiner 配置已经是最新版本。\n'
-fi
 printf 'Swift 可执行文件：%s\n' "$binary_path"
 printf '亮度可执行文件：%s\n' "$brightness_path"
 printf '亮度唤醒恢复服务：%s\n' "$agent_path"
-printf 'Karabiner 规则资源：%s\n' "$asset_path"
-printf '配置备份：%s\n' "$config_backup"
+printf '配置备份：%s\n' "$karabiner_config.capslock-pro.backup"

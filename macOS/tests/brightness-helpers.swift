@@ -45,7 +45,7 @@ case "toast-activity":
     try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
     let paths = BrightnessToastPaths(directory: cache, displayID: 42)
     // Show pending immediately even without a prior value, without inventing a percentage.
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache)
+    _ = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache)
     let pending = try JSONDecoder().decode(BrightnessToastState.self, from: Data(contentsOf: paths.state))
     precondition(pending.percentage == nil && pending.pending == true)
     // A confirmed value is reused for an immediate preview before hardware reads.
@@ -56,7 +56,7 @@ case "toast-activity":
     adjustment.directions = []
     adjustment.completedRevision = adjustment.revision
     try adjustmentPaths.save(adjustment, displayID: 42, cache: cache)
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache)
+    _ = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache)
     let refreshed = try JSONDecoder().decode(BrightnessToastState.self, from: Data(contentsOf: paths.state))
     precondition(refreshed.percentage == 70)
     precondition(refreshed.pending == true)
@@ -83,12 +83,12 @@ case "debounce":
     var reads = 0
     var writes: [UInt16] = []
     var injected = false
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache, now: clock)
-    try applyBrightnessAdjustments(displayID: 42, cache: cache, read: {
+    let burst = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache, now: clock)!
+    try applyBrightnessAdjustments(displayID: 42, cache: cache, lease: burst, read: {
         reads += 1
         // A second key arrives while the initial monitor read is still running.
         clock += 0.05
-        try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache, now: clock)
+        _ = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache, now: clock)
         return Brightness(current: 50, maximum: 100)
     }, write: { value in
         precondition(clock >= 100.2 + brightnessSettleDelay)
@@ -99,9 +99,9 @@ case "debounce":
             // Preview is visible and no hardware write has happened yet.
             precondition(try! toast(cache).percentage == 60)
             clock = 100.2
-            try! enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache, now: clock)
+            _ = try! enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache, now: clock)
             precondition(try! toast(cache).percentage == 65)
-            try! enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: cache, now: clock)
+            _ = try! enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: cache, now: clock)
             injected = true
         }
         clock += 0.01
@@ -113,36 +113,34 @@ case "debounce":
 
     // New burst previews immediately, but rebases on the actual OSD value (20%).
     clock = 102
-    try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: cache, now: clock)
+    let nextBurst = try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: cache, now: clock)!
     precondition(try! toast(cache).percentage == 55)
-    try applyBrightnessAdjustments(displayID: 42, cache: cache,
+    try applyBrightnessAdjustments(displayID: 42, cache: cache, lease: nextBurst,
                                    read: { Brightness(current: 20, maximum: 100) },
                                    write: { writes.append($0) }, now: { clock }, wait: { clock += 0.01 })
     precondition(writes == [60, 15])
 
     let bounds = try directory("bounds")
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: bounds, now: clock)
-    try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: bounds, now: clock)
+    let bounding = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: bounds, now: clock)!
+    _ = try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: bounds, now: clock)
     var boundaryWrites: [UInt16] = []
-    try applyBrightnessAdjustments(displayID: 42, cache: bounds,
+    try applyBrightnessAdjustments(displayID: 42, cache: bounds, lease: bounding,
                                    read: { Brightness(current: 100, maximum: 100) },
                                    write: { boundaryWrites.append($0) }, now: { clock }, wait: { clock += 0.01 })
     precondition(boundaryWrites == [95])
 
     let inflight = try directory("inflight")
     var concurrentWrites: [UInt16] = []
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: inflight, now: clock)
-    try applyBrightnessAdjustments(displayID: 42, cache: inflight,
+    let inFlight = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: inflight, now: clock)!
+    try applyBrightnessAdjustments(displayID: 42, cache: inflight, lease: inFlight,
                                    read: { Brightness(current: 50, maximum: 100) }, write: { value in
         concurrentWrites.append(value)
         if concurrentWrites.count == 1 {
             clock += 0.05
-            try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: inflight, now: clock)
+            _ = try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: inflight, now: clock)
             precondition(try! toast(inflight).percentage == 50)
             // A competing worker exits without touching hardware or stealing the newer input.
-            try applyBrightnessAdjustments(displayID: 42, cache: inflight,
-                                           read: { fatalError("Competing read") },
-                                           write: { _ in fatalError("Competing write") })
+            precondition(try! BrightnessWorkerLease(claiming: BrightnessAdjustmentPaths(cache: inflight, displayID: 42).owner) == nil)
         }
     }, now: { clock }, wait: { clock += 0.01 })
     precondition(concurrentWrites == [55, 50])
@@ -151,9 +149,9 @@ case "debounce":
 
     let failed = try directory("failed")
     var failureReads = 0
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: failed, now: clock)
+    let firstFailure = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: failed, now: clock)!
     do {
-        try applyBrightnessAdjustments(displayID: 42, cache: failed, read: {
+        try applyBrightnessAdjustments(displayID: 42, cache: failed, lease: firstFailure, read: {
             failureReads += 1
             return Brightness(current: failureReads == 1 ? 50 : 48, maximum: 100)
         }, write: { _ in throw BrightnessError("Simulated DDC failure") },
@@ -163,8 +161,8 @@ case "debounce":
     precondition(try! toast(failed).failed == true)
     precondition(try! toast(failed).pending == false)
     precondition(try! toast(failed).percentage == 48)
-    try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: failed, now: clock)
-    try applyBrightnessAdjustments(displayID: 42, cache: failed,
+    let retry = try enqueueBrightnessAdjustment(direction: -1, displayID: 42, cache: failed, now: clock)!
+    try applyBrightnessAdjustments(displayID: 42, cache: failed, lease: retry,
                                    read: { Brightness(current: 48, maximum: 100) },
                                    write: { precondition($0 == 43) }, now: { clock }, wait: { clock += 0.01 })
     precondition(try! toast(failed).failed == false)
@@ -231,17 +229,23 @@ case "restore":
                           write: { precondition($0 == 45) })
     precondition(try! second.load() == Brightness(current: 80, maximum: 100))
     // Current key presses take precedence over background restoration.
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 99, cache: cache, now: 100)
+    var owner = try enqueueBrightnessAdjustment(direction: 1, displayID: 99, cache: cache, now: 100)
+    precondition(owner != nil)
     try restoreBrightness(displayID: 99, cache: cache, saved: first,
                           read: { fatalError("Restore interrupted pending key") },
-                          write: { _ in fatalError("Restore interrupted pending key") }, now: 101)
-    // Requests abandoned before reboot must not prevent restoration forever.
+                          write: { _ in fatalError("Restore interrupted pending key") })
+    owner = nil  // Simulate a crash before the worker can acknowledge its queue.
+    var restored: [UInt16] = []
     try restoreBrightness(displayID: 99, cache: cache, saved: first,
                           read: { Brightness(current: 100, maximum: 100) },
-                          write: { precondition($0 == 45) }, now: 1)
-    try restoreBrightness(displayID: 99, cache: cache, saved: first,
-                          read: { Brightness(current: 100, maximum: 100) },
-                          write: { precondition($0 == 45) }, now: 200)
+                          write: { restored.append($0) })
+    precondition(restored == [45])
+    // Even an immediate new press must not replay the dead worker's up key.
+    let fresh = try enqueueBrightnessAdjustment(direction: -1, displayID: 99, cache: cache, now: 100.1)!
+    try applyBrightnessAdjustments(displayID: 99, cache: cache, lease: fresh,
+                                  read: { Brightness(current: 80, maximum: 100) },
+                                  write: { restored.append($0) }, now: { 102 })
+    precondition(restored == [45, 75])
     // Corrupt preferences must fail closed instead of changing a monitor to a guessed value.
     try Data("{\"current\":101,\"maximum\":100}".utf8).write(to: first.file)
     do {
@@ -277,10 +281,15 @@ case "restore":
     print("restore passed")
 case "enqueue":
     let cache = URL(fileURLWithPath: testArguments[1], isDirectory: true)
-    try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache)
+    if let lease = try enqueueBrightnessAdjustment(direction: 1, displayID: 42, cache: cache) {
+        try launchInBackground(executable: CommandLine.arguments[0], arguments: ["apply-mock", cache.path],
+                               logPath: cache.appendingPathComponent("worker.log").path, workerFD: lease.fd)
+        withExtendedLifetime(lease) {}
+    }
 case "apply-mock":
     let cache = URL(fileURLWithPath: testArguments[1], isDirectory: true)
-    try applyBrightnessAdjustments(displayID: 42, cache: cache, read: {
+    let lease = BrightnessWorkerLease(inherited: 3, path: BrightnessAdjustmentPaths(cache: cache, displayID: 42).owner)!
+    try applyBrightnessAdjustments(displayID: 42, cache: cache, lease: lease, read: {
         try Data("read\n".utf8).write(to: cache.appendingPathComponent("read"))
         usleep(100_000)
         return Brightness(current: 50, maximum: 100)

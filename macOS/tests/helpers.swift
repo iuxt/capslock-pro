@@ -1,6 +1,27 @@
 // 由 test_macos.py 与生产源码的函数部分一起编译，无需辅助功能权限。
 let testArguments = Array(CommandLine.arguments.dropFirst())
 switch testArguments[0] {
+case "window-handoff":
+    let original = WindowIdentity(pid: 123, number: 42)
+    let otherWindow = WindowIdentity(pid: 123, number: 43)
+    let otherApp = WindowIdentity(pid: 456, number: 42)
+    func select(_ identity: WindowIdentity?) -> String? {
+        targetWindow(expected: original, focused: "AX window", identify: { _ in identity })
+    }
+    precondition(select(original) == "AX window")
+    precondition(select(otherWindow) == nil && select(otherApp) == nil && select(nil) == nil)
+    precondition(targetWindow(expected: original, focused: nil as String?, identify: { _ in original }) == nil)
+case "fullscreen-rollback":
+    let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    let normal = CGRect(x: 20, y: 50, width: 800, height: 600)
+    var frame = screen
+    let rollback = ordinaryFrame(initial: screen, fullScreen: true, exitAndWait: { frame = normal },
+                                 readFrame: { frame })
+    precondition(rollback == normal)
+    // An invalid AX object must never substitute the fullscreen size for a failed read.
+    precondition(ordinaryFrame(initial: screen, fullScreen: true, exitAndWait: {}, readFrame: { nil }) == nil)
+    precondition(ordinaryFrame(initial: normal, fullScreen: false, exitAndWait: { fatalError("Unexpected exit") },
+                               readFrame: { fatalError("Unexpected AX read") }) == normal)
 case "geometry":
     let large = CGRect(x: -2560, y: -200, width: 2560, height: 1400)
     let small = CGRect(x: 0, y: 25, width: 1440, height: 875)

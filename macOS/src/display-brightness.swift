@@ -15,7 +15,7 @@ func writeStderr(_ message: String) {
 }
 
 // Independent process group: subsequent Karabiner commands must not cancel DDC writes.
-func launchInBackground(executable: String, arguments: [String], logPath: String) throws {
+func launchInBackground(executable: String, arguments: [String], logPath: String, workerFD: Int32? = nil) throws {
     var attributes: posix_spawnattr_t?
     var actions: posix_spawn_file_actions_t?
     func check(_ error: Int32) throws {
@@ -32,6 +32,9 @@ func launchInBackground(executable: String, arguments: [String], logPath: String
         &actions, STDOUT_FILENO, logPath, O_WRONLY | O_CREAT | O_APPEND, 0o600
     ))
     try check(posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO))
+
+    // dup2 in the child clears CLOEXEC and retains the same flock across the handoff.
+    if let workerFD { try check(posix_spawn_file_actions_adddup2(&actions, workerFD, 3)) }
 
     let strings = ([executable] + arguments).map { strdup($0) }
     let environment = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") }
@@ -394,16 +397,47 @@ struct BrightnessAdjustmentPaths {
     }
 }
 
+/// One open file description owns a burst, from its first enqueue through worker shutdown.
+final class BrightnessWorkerLease {
+    let fd: Int32
+
+    init?(claiming path: String) throws {
+        let handle = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard handle >= 0 else { throw BrightnessError("无法打开亮度后台进程锁") }
+        if flock(handle, LOCK_EX | LOCK_NB) != 0 {
+            let code = errno
+            close(handle)
+            if code == EWOULDBLOCK { return nil }
+            throw BrightnessError("无法获取亮度后台进程锁：\(code)")
+        }
+        fd = handle
+    }
+
+    init?(inherited handle: Int32, path: String) {
+        var inherited = stat(), expected = stat()
+        guard fstat(handle, &inherited) == 0, lstat(path, &expected) == 0,
+              inherited.st_dev == expected.st_dev, inherited.st_ino == expected.st_ino,
+              fcntl(handle, F_SETFD, FD_CLOEXEC) == 0, flock(handle, LOCK_EX | LOCK_NB) == 0 else { return nil }
+        fd = handle
+    }
+
+    deinit { close(fd) }
+}
+
 /// Publish the preview before starting or waiting for any monitor I/O.
 func enqueueBrightnessAdjustment(direction: Int, displayID: UInt32, cache: URL,
-                                 now requestedTime: Double? = nil) throws {
+                                 now requestedTime: Double? = nil) throws -> BrightnessWorkerLease? {
     let paths = BrightnessAdjustmentPaths(cache: cache, displayID: displayID)
     let gate = try acquireBrightnessLock(at: paths.gate)
     defer { close(gate) }
     var state = try paths.load()
     // Sample after locking: concurrent processes may acquire the gate in a different order.
     let now = requestedTime ?? ProcessInfo.processInfo.systemUptime
-    if state.updatedAt > now { state = BrightnessAdjustmentState() } // Reboot: uptime restarted.
+    let lease = try BrightnessWorkerLease(claiming: paths.owner)
+    if lease != nil && (state.pending || state.updatedAt > now) {
+        // No surviving owner: a crashed or unlaunched worker must not replay old keys.
+        state = BrightnessAdjustmentState()
+    }
     if !state.pending && now - state.updatedAt > 60 { state.target = nil }
     state.directions.append(direction)
     if let target = state.target {
@@ -413,21 +447,17 @@ func enqueueBrightnessAdjustment(direction: Int, displayID: UInt32, cache: URL,
     state.updatedAt = now
     state.failed = false
     try paths.save(state, displayID: displayID, cache: cache)
+    return lease
 }
 
 /// One worker per screen. Closures allow regression tests without touching a real monitor.
-func applyBrightnessAdjustments(displayID: UInt32, cache: URL,
+func applyBrightnessAdjustments(displayID: UInt32, cache: URL, lease: BrightnessWorkerLease,
                                 read: () throws -> Brightness, write: (UInt16) throws -> Void,
                                 now: () -> Double = { ProcessInfo.processInfo.systemUptime },
                                 wait: () -> Void = { usleep(10_000) }) throws {
     let paths = BrightnessAdjustmentPaths(cache: cache, displayID: displayID)
-    let owner = open(paths.owner, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
-    guard owner >= 0 else { throw BrightnessError("无法创建亮度后台进程锁") }
-    defer { close(owner) }
-    if flock(owner, LOCK_EX | LOCK_NB) != 0 {
-        if errno == EWOULDBLOCK { return }
-        throw BrightnessError("无法锁定亮度后台进程")
-    }
+    let owner = lease.fd
+    defer { withExtendedLifetime(lease) {} }
     var needsRead = true
     while true {
         let snapshot: BrightnessAdjustmentState
@@ -543,8 +573,7 @@ func writeRememberedBrightness(_ value: UInt16, saved: SavedBrightness?,
 
 /// Each retry loads the newest saved value. Restoration never overwrites the saved preference.
 func restoreBrightness(displayID: UInt32, cache: URL, saved: SavedBrightness,
-                       read: () throws -> Brightness, write: (UInt16) throws -> Void,
-                       now: Double = ProcessInfo.processInfo.systemUptime) throws {
+                       read: () throws -> Brightness, write: (UInt16) throws -> Void) throws {
     let lock = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-\(displayID).lock").path)
     defer { close(lock) }
     let paths = BrightnessAdjustmentPaths(cache: cache, displayID: displayID)
@@ -553,7 +582,7 @@ func restoreBrightness(displayID: UInt32, cache: URL, saved: SavedBrightness,
         defer { close(gate) }
         let state = try paths.load()
         // Let a current shortcut finish, including its debounce/read/write cycle.
-        if state.pending && state.updatedAt <= now && now - state.updatedAt < 60 { return }
+        if state.pending, try BrightnessWorkerLease(claiming: paths.owner) == nil { return }
     }
     guard let desired = try saved.load() else { return }
     let actual = try read()
@@ -810,7 +839,10 @@ if !background, arguments.count == 2, arguments[0] == "--apply", let id = UInt32
     do {
         let cache = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Caches/CapsLock-Pro", isDirectory: true)
-        try runBrightnessAdjustmentWorker(displayID: id, cache: cache)
+        guard let lease = BrightnessWorkerLease(inherited: 3, path: BrightnessAdjustmentPaths(cache: cache, displayID: id).owner) else {
+            throw BrightnessError("亮度后台进程缺少有效的锁")
+        }
+        try runBrightnessAdjustmentWorker(displayID: id, cache: cache, lease: lease)
         exit(0)
     } catch { writeStderr("display-brightness: \(error)"); exit(1) }
 }
@@ -819,7 +851,7 @@ guard (1...2).contains(arguments.count), ["list", "get", "up", "down"].contains(
     writeStderr(usage); exit(2)
 }
 
-func runBrightnessAdjustmentWorker(displayID: UInt32, cache: URL) throws {
+func runBrightnessAdjustmentWorker(displayID: UInt32, cache: URL, lease: BrightnessWorkerLease) throws {
     var display: DDCDisplay?
     func withDisplay<T>(_ operation: (DDCDisplay) throws -> T) throws -> T {
         let lock = try acquireBrightnessLock(at: cache.appendingPathComponent("brightness-\(displayID).lock").path)
@@ -827,7 +859,7 @@ func runBrightnessAdjustmentWorker(displayID: UInt32, cache: URL) throws {
         if display == nil { display = try DDCDisplay(displayID: displayID, api: DisplayAPI()) }
         return try operation(display!)
     }
-    try applyBrightnessAdjustments(displayID: displayID, cache: cache,
+    try applyBrightnessAdjustments(displayID: displayID, cache: cache, lease: lease,
                                    read: { try withDisplay { try $0.brightness() } },
                                    write: { value in try withDisplay {
         let saved = persistentDisplayID(displayID).map {
@@ -848,18 +880,19 @@ func run() throws {
             throw BrightnessError("没有可调节的外接显示器，请检查显示器 ID 或鼠标位置")
         }
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
-        try enqueueBrightnessAdjustment(direction: arguments[0] == "up" ? 1 : -1, displayID: id, cache: cache)
+        let lease = try enqueueBrightnessAdjustment(direction: arguments[0] == "up" ? 1 : -1, displayID: id, cache: cache)
         let logs = home.appendingPathComponent("Library/Logs/CapsLock-Pro", isDirectory: true)
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-        if background {
+        if background, let lease {
             try launchInBackground(executable: URL(fileURLWithPath: CommandLine.arguments[0]).path,
                                    arguments: ["--apply", String(id)],
-                                   logPath: logs.appendingPathComponent("brightness.log").path)
+                                   logPath: logs.appendingPathComponent("brightness.log").path, workerFD: lease.fd)
+            withExtendedLifetime(lease) {}
         }
         do { try launchBrightnessToastIfNeeded(displayID: id, cache: cache) }
         catch { writeStderr("display-brightness: 无法启动亮度提示：\(error)") }
         if !background {
-            try runBrightnessAdjustmentWorker(displayID: id, cache: cache)
+            if let lease { try runBrightnessAdjustmentWorker(displayID: id, cache: cache, lease: lease) }
             let paths = BrightnessAdjustmentPaths(cache: cache, displayID: id)
             let gate = try acquireBrightnessLock(at: paths.gate)
             defer { close(gate) }

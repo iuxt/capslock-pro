@@ -19,7 +19,8 @@ karabiner://karabiner/assets/complex_modifications/import?url=https://raw.github
 ./macOS/update.sh
 ```
 
-脚本会保留其他 Karabiner 规则，并将修改前的配置备份为
+脚本按原位置更新已有规则，保留其他规则的优先级和配置注释；同名资源文件被占用时另选文件名。
+只有当前 profile 确实需要修改时，才将修改前的配置备份为
 `~/.config/karabiner/karabiner.json.capslock-pro.backup`。首次使用前请先启动一次
 Karabiner-Elements，让它生成配置文件。源码没有变化时脚本会保留现有可执行文件，避免
 反复覆盖导致 macOS 辅助功能授权失效；如需强制重新编译，可执行
@@ -198,7 +199,7 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 - Karabiner 规则调用 `~/.local/bin/move-window-display`，该文件需要由 Swift 源码预先编译；
 - 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也添加 `~/.local/bin/move-window-display`）；
 - Swift 版本遇到原生全屏窗口时，会自动退出全屏、移动到目标显示器，然后在目标显示器恢复全屏；如果应用或 macOS 拒绝切换，会响一声提示音。
-- 窗口操作始终绑定触发快捷键时的窗口；若应用在全屏切换时使原窗口对象失效，会报错停止，请等切换结束后重新按快捷键。
+- 启动器会记录当时的进程 ID 和窗口 ID；后台接手前焦点已变化则忽略这次按键。若无法取得窗口 ID，会停止操作。接手后始终操作同一窗口，原生全屏退出后的普通窗口位置和尺寸用于失败回滚。
 
 ### macOS 回归检查
 

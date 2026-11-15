@@ -54,6 +54,14 @@ class MacOSTests(unittest.TestCase):
             time.sleep(0.02)
         self.fail(f"Timed out waiting for {path}")
 
+    def test_window_handoff_rejects_focus_change(self):
+        result = self.run_command([self.harness, "window-handoff"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fullscreen_rollback_uses_windowed_size(self):
+        result = self.run_command([self.harness, "fullscreen-rollback"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_geometry(self):
         result = self.run_command([self.harness, "geometry"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -160,6 +168,47 @@ class MacOSTests(unittest.TestCase):
                 self.assertEqual(marker.read_text().splitlines(), ["--background", direction])
                 self.assertFalse((directory / "INJECTED").exists())
 
+    def test_commented_profiles_keep_custom_rules_priority_assets_and_backup(self):
+        with tempfile.TemporaryDirectory(dir=self.directory) as directory:
+            d = Path(directory)
+            source = ROOT / "macOS/Karabiner-Elements.json"
+            rules = json.loads(source.read_text())["rules"]
+            config = d / "karabiner.json"
+            assets = d / "assets"
+            assets.mkdir()
+            foreign = b'{"title":"Custom shortcuts","rules":[]}\n'
+            (assets / "capslock-pro.json").write_bytes(foreign)
+            custom = '{"description":"URL https://example.org/*keep*/","manipulators":[]}'
+            old = json.dumps(dict(rules[4], manipulators=[], enabled=False))
+            active = ('{"name":"Active","complex_modifications":{"rules":['
+                      + json.dumps(rules[0]) + ', /* priority */ ' + custom + ', ' + old + ']}}')
+            inactive = '{"name":"Other", /* not selected */ "complex_modifications":{}}'
+            for profiles in ([active], [active, inactive]):
+                original = '// file comment\n{"profiles":[' + ','.join(profiles) + ']}'
+                config.write_text(original)
+                for iteration in range(2):
+                    result = self.run_command(["/usr/bin/python3", ROOT / "macOS/sync_rules.py", source,
+                                               assets, config, d, d / "agent.plist", d / "log", "test.agent"])
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((assets / "capslock-pro.json").read_bytes(), foreign)
+                    self.assertEqual(Path(str(config) + ".capslock-pro.backup").read_text(), original)
+                    output = config.read_text()
+                    self.assertIn("// file comment", output)
+                    self.assertIn("/* priority */ " + custom, output)
+                    if len(profiles) == 2:
+                        self.assertIn(inactive, output)
+                    self.assertLess(output.index(custom), output.index(rules[4]["description"]))
+                    parsed = json.loads(output.replace("// file comment", "").replace("/* priority */", "")
+                                        .replace("/* not selected */", ""))
+                    actual = parsed["profiles"][0]["complex_modifications"]["rules"]
+                    self.assertFalse(actual[2]["enabled"])
+                    self.assertEqual(len(actual), len(rules) + 1)
+                    if iteration:
+                        self.assertIn("配置已经是最新版本", result.stdout)
+                        self.assertEqual(output, first)
+                    first = output
+            self.assertEqual(sorted(p.name for p in assets.iterdir()), ["capslock-pro-2.json", "capslock-pro.json"])
+
     def test_brightness_protocol_and_arguments(self):
         result = self.run_command([self.brightness_harness, "protocol"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -188,15 +237,12 @@ class MacOSTests(unittest.TestCase):
         try:
             for producer in producers:
                 self.assertEqual(producer.wait(timeout=5), 0)
-            workers = [subprocess.Popen([self.brightness_harness, "apply-mock", cache]) for _ in range(2)]
-            try:
-                for worker in workers:
-                    self.assertEqual(worker.wait(timeout=5), 0)
-            finally:
-                for worker in workers:
-                    if worker.poll() is None:
-                        worker.kill()
-                        worker.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                toast_path = cache / "brightness-toast-42.json"
+                if toast_path.exists() and not json.loads(toast_path.read_text())["pending"]:
+                    break
+                time.sleep(0.02)
             self.assertEqual((cache / "writes").read_text().splitlines(), ["90"])
             toast = json.loads((cache / "brightness-toast-42.json").read_text())
             self.assertEqual(toast["percentage"], 90)

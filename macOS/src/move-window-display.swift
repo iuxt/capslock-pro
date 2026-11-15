@@ -253,10 +253,41 @@ func focusedWindow() -> AXUIElement? {
     return preferredWindow(in: AXUIElementCreateApplication(application.processIdentifier))
 }
 
+// AX objects are process-local. Match the owning PID and WindowServer ID across posix_spawn.
+struct WindowIdentity: Equatable {
+    let pid: pid_t
+    let number: CGWindowID
+
+    static func capture(_ window: AXUIElement) -> Self? {
+        // AX has no public window-number attribute. Fail closed if the bridge is unavailable.
+        typealias GetNumber = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow") else { return nil }
+        var pid: pid_t = 0
+        var number: CGWindowID = 0
+        guard AXUIElementGetPid(window, &pid) == .success, pid > 0,
+              unsafeBitCast(symbol, to: GetNumber.self)(window, &number) == .success, number != 0 else { return nil }
+        return Self(pid: pid, number: number)
+    }
+}
+
+// Never re-fetch focus after a successful match; return the exact object that was checked.
+func targetWindow<T>(expected: WindowIdentity?, focused: T?, identify: (T) -> WindowIdentity?) -> T? {
+    guard let focused else { return nil }
+    if let expected, identify(focused) != expected { return nil }
+    return focused
+}
+
+func windowFrame(_ window: AXUIElement) -> CGRect? {
+    guard let position = pointValue(copyAttribute(window, kAXPositionAttribute as String)),
+          let size = sizeValue(copyAttribute(window, kAXSizeAttribute as String)),
+          size.width > 0, size.height > 0 else { return nil }
+    return CGRect(origin: position, size: size)
+}
+
 func failMove(
     _ message: String,
     window: AXUIElement,
-    restoreFrame: CGRect,
+    restoreFrame: CGRect?,
     restoreFullScreen: Bool
 ) -> Never {
     writeStderr(message)
@@ -264,11 +295,13 @@ func failMove(
     // 只恢复原窗口。原 AX 对象失效时让写入失败，不按当前焦点猜测替代窗口。
     let candidate = window
     // 先回到原屏，再恢复尺寸，避免尺寸被较小的目标屏幕限制。
-    setPoint(candidate, kAXPositionAttribute as String, restoreFrame.origin)
-    _ = waitForPosition(candidate, expected: restoreFrame.origin)
-    setSize(candidate, kAXSizeAttribute as String, restoreFrame.size)
-    _ = waitForSize(candidate, expected: restoreFrame.size)
-    setPoint(candidate, kAXPositionAttribute as String, restoreFrame.origin)
+    if let restoreFrame {
+        setPoint(candidate, kAXPositionAttribute as String, restoreFrame.origin)
+        _ = waitForPosition(candidate, expected: restoreFrame.origin)
+        setSize(candidate, kAXSizeAttribute as String, restoreFrame.size)
+        _ = waitForSize(candidate, expected: restoreFrame.size)
+        setPoint(candidate, kAXPositionAttribute as String, restoreFrame.origin)
+    }
     if restoreFullScreen {
         if boolValue(copyAttribute(candidate, "AXFullScreen")) != true,
            setBoolean(candidate, "AXFullScreen", true) == .success {
@@ -278,6 +311,31 @@ func failMove(
 
     NSSound.beep()
     exit(1)
+}
+
+/// Only ordinary window geometry is safe to write back when an operation fails.
+func ordinaryFrame(initial: CGRect, fullScreen: Bool, exitAndWait: () -> Void,
+                   readFrame: () -> CGRect?) -> CGRect? {
+    guard fullScreen else { return initial }
+    exitAndWait()
+    return readFrame()
+}
+
+func prepareWindowFrame(_ window: AXUIElement, initial: CGRect, fullScreen: Bool) -> CGRect {
+    let frame = ordinaryFrame(initial: initial, fullScreen: fullScreen, exitAndWait: {
+        guard setBoolean(window, "AXFullScreen", false) == .success,
+              waitForBoolean(window, "AXFullScreen", expected: false, timeoutMs: 2_500) else {
+            writeStderr("move-window-display: 无法退出全屏状态")
+            NSSound.beep()
+            exit(1)
+        }
+        usleep(650_000)  // AXFullScreen changes before the Space animation finishes.
+    }, readFrame: { windowFrame(window) })
+    guard let frame else {
+        failMove("move-window-display: 无法读取退出全屏后的普通窗口尺寸",
+                 window: window, restoreFrame: nil, restoreFullScreen: true)
+    }
+    return frame
 }
 
 // MARK: - Geometry
@@ -380,6 +438,14 @@ var arguments = Array(CommandLine.arguments.dropFirst())
 let background = arguments.first == "--background"
 if background { arguments.removeFirst() }
 
+var expectedWindow: WindowIdentity?
+if !background && arguments.first == "--window" {
+    guard arguments.count >= 3, let pid = pid_t(arguments[1]), pid > 0,
+          let number = CGWindowID(arguments[2]), number != 0 else { writeStderr(usage); exit(2) }
+    expectedWindow = WindowIdentity(pid: pid, number: number)
+    arguments.removeFirst(3)
+}
+
 if arguments.first == "-h" || arguments.first == "--help" {
     print(usage)
     exit(0)
@@ -410,14 +476,26 @@ case let value:
 
 // MARK: - Main
 
+let trustOptions = [
+    kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+] as CFDictionary
+guard AXIsProcessTrustedWithOptions(trustOptions) else {
+    writeStderr("move-window-display: 缺少辅助功能权限")
+    exit(1)
+}
+
 if background {
+    guard let focused = focusedWindow(), let identity = WindowIdentity.capture(focused) else {
+        writeStderr("move-window-display: 无法识别快捷键触发时的窗口")
+        exit(1)
+    }
     do {
         let logDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/CapsLock-Pro", isDirectory: true)
         try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
         try launchInBackground(
             executable: URL(fileURLWithPath: CommandLine.arguments[0]).path,
-            arguments: arguments,
+            arguments: ["--window", String(identity.pid), String(identity.number)] + arguments,
             logPath: logDirectory.appendingPathComponent("window.log").path
         )
         exit(0)
@@ -442,16 +520,12 @@ do {
     exit(1)
 }
 
-let trustOptions = [
-    kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-] as CFDictionary
-guard AXIsProcessTrustedWithOptions(trustOptions) else {
-    writeStderr("move-window-display: 缺少辅助功能权限")
-    exit(1)
-}
-
 // 整次操作绑定同一个 AX 窗口，动画期间焦点变化不能改变操作对象。
-guard let window = focusedWindow() else {
+guard let window = targetWindow(expected: expectedWindow, focused: focusedWindow(), identify: WindowIdentity.capture) else {
+    if expectedWindow != nil {
+        dbg("target closed or focus changed before background worker started; ignoring request")
+        exit(0)
+    }
     writeStderr("move-window-display: 无法获取当前窗口")
     NSSound.beep()
     exit(1)
@@ -519,23 +593,14 @@ if case .toggleWindowSize = command {
     let targetRatio: CGFloat = distanceFromLarge <= distanceFromSmall ? 0.50 : 0.80
 
     let wasFullScreen = boolValue(copyAttribute(window, "AXFullScreen")) == true
-    if wasFullScreen {
-        dbg("leaving full screen before resizing")
-        guard setBoolean(window, "AXFullScreen", false) == .success,
-              waitForBoolean(window, "AXFullScreen", expected: false, timeoutMs: 2_500) else {
-            writeStderr("move-window-display: 无法退出全屏状态")
-            NSSound.beep()
-            exit(1)
-        }
-        usleep(650_000)
-    }
+    let rollbackFrame = prepareWindowFrame(window, initial: initialFrame, fullScreen: wasFullScreen)
 
     guard isAttributeSettable(window, kAXSizeAttribute as String),
           isAttributeSettable(window, kAXPositionAttribute as String) else {
         failMove(
             "move-window-display: 当前窗口不允许调整大小或位置",
             window: window,
-            restoreFrame: initialFrame,
+            restoreFrame: rollbackFrame,
             restoreFullScreen: wasFullScreen
         )
     }
@@ -561,7 +626,7 @@ if case .toggleWindowSize = command {
         failMove(
             "move-window-display: 当前窗口拒绝调整大小",
             window: window,
-            restoreFrame: initialFrame,
+            restoreFrame: rollbackFrame,
             restoreFullScreen: wasFullScreen
         )
     }
@@ -577,7 +642,7 @@ if case .toggleWindowSize = command {
         failMove(
             "move-window-display: 无法将窗口居中",
             window: window,
-            restoreFrame: initialFrame,
+            restoreFrame: rollbackFrame,
             restoreFullScreen: wasFullScreen
         )
     }
@@ -609,27 +674,9 @@ guard targetIndex != currentIndex else { exit(0) }
 // 原生全屏会拦截位置/尺寸写入：先退出，移动完成后在目标显示器恢复全屏。
 let wasFullScreen = boolValue(copyAttribute(window, "AXFullScreen")) == true
 let wasMaximized = !wasFullScreen && fillsVisibleFrame(initialFrame, in: screens[currentIndex].visibleFrame)
-if wasFullScreen {
-    dbg("leaving full screen")
-    guard setBoolean(window, "AXFullScreen", false) == .success,
-          waitForBoolean(window, "AXFullScreen", expected: false, timeoutMs: 2_500) else {
-        writeStderr("move-window-display: 无法退出全屏状态")
-        NSSound.beep()
-        exit(1)
-    }
-    // 属性会先变为 false，Space 切换动画随后才结束。
-    usleep(650_000)
-}
-guard let originalPosition = pointValue(copyAttribute(window, kAXPositionAttribute as String)),
-      let originalSize = sizeValue(copyAttribute(window, kAXSizeAttribute as String)),
-      originalSize.width > 0, originalSize.height > 0 else {
-    failMove(
-        "move-window-display: 无法读取窗口的位置或尺寸",
-        window: window,
-        restoreFrame: initialFrame,
-        restoreFullScreen: wasFullScreen
-    )
-}
+let rollbackFrame = prepareWindowFrame(window, initial: initialFrame, fullScreen: wasFullScreen)
+let originalPosition = rollbackFrame.origin
+let originalSize = rollbackFrame.size
 
 let source = screens[currentIndex].visibleFrame
 let target = screens[targetIndex].visibleFrame
@@ -655,7 +702,7 @@ guard isAttributeSettable(window, kAXPositionAttribute as String) else {
     failMove(
         "move-window-display: 当前窗口不允许移动",
         window: window,
-        restoreFrame: initialFrame,
+        restoreFrame: rollbackFrame,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -697,7 +744,7 @@ guard let actualPosition = waitForPosition(window, expected: finalOrigin) else {
     failMove(
         "move-window-display: 无法确认窗口移动结果",
         window: window,
-        restoreFrame: initialFrame,
+        restoreFrame: rollbackFrame,
         restoreFullScreen: wasFullScreen
     )
 }
@@ -713,7 +760,7 @@ if !screens[targetIndex].frame.contains(finalCenter) {
     failMove(
         "move-window-display: 窗口移动失败",
         window: window,
-        restoreFrame: initialFrame,
+        restoreFrame: rollbackFrame,
         restoreFullScreen: wasFullScreen
     )
 }
