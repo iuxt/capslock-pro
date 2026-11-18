@@ -139,7 +139,7 @@ def sync(source_path, assets, config, bin_dir):
         for m in rule['manipulators']:
             for event in m.get('to', []):
                 for tool in ('move-window-display', 'display-brightness'):
-                    prefix = '"$HOME/.local/bin/' + tool + '" '
+                    prefix = '"$HOME/OneDrive/bin/' + tool + '" '
                     command = event.get('shell_command', '')
                     if command.startswith(prefix):
                         quoted = "'" + str(bin_dir / tool).replace("'", "'\\''") + "'"

@@ -25,13 +25,9 @@ karabiner://karabiner/assets/complex_modifications/import?url=https://raw.github
 Karabiner-Elements，让它生成配置文件。源码没有变化时脚本会保留现有可执行文件，避免
 反复覆盖导致 macOS 辅助功能授权失效；如需强制重新编译，可执行
 `./macOS/update.sh --force`。
-若要安装到其他目录，可设置 `CAPSLOCK_PRO_BIN_DIR`，例如
-`CAPSLOCK_PRO_BIN_DIR="$HOME/bin" ./macOS/update.sh`。脚本会将实际安装路径同步到
-当前 profile 的窗口快捷键规则和 Karabiner 规则资源；直接导入仓库中的 JSON 仍使用默认路径。
-
-如需安装到其他目录，可运行 `CAPSLOCK_PRO_BIN_DIR="/自定义目录" ./macOS/update.sh`。
-脚本会同时更新当前 profile 和规则资源中的调用路径；自定义目录安装请使用此脚本，
-网页导入的规则使用默认目录 `~/.local/bin`。
+两个 Swift 可执行文件默认安装到 `~/OneDrive/bin/`，直接导入仓库中的 JSON 也使用此目录。
+如需安装到其他目录，可运行 `CAPSLOCK_PRO_BIN_DIR="$HOME/bin" ./macOS/update.sh`。
+脚本会将实际安装路径同步到当前 profile 和 Karabiner 规则资源。
 
 Windows 和 macOS 均可按 `CapsLock + r`，将当前窗口居中，并在当前屏幕可用区域
 80% 和 50% 的宽高之间切换。
@@ -91,13 +87,13 @@ F1/F2 保持原有行为。若外接键盘在固件层将 F1/F2 转为多媒体�
 
 ```bash
 # 查看外接屏 ID（ID 可能随重新连接变化）
-~/.local/bin/display-brightness list
+~/OneDrive/bin/display-brightness list
 # 读取当前亮度，或调高/调低
-~/.local/bin/display-brightness get
-~/.local/bin/display-brightness up
-~/.local/bin/display-brightness down
+~/OneDrive/bin/display-brightness get
+~/OneDrive/bin/display-brightness up
+~/OneDrive/bin/display-brightness down
 # 可在命令末尾指定 list 输出的显示器 ID
-~/.local/bin/display-brightness get 3
+~/OneDrive/bin/display-brightness get 3
 ```
 
 快捷键先将输入写入每个屏幕独立的目标状态，由一个后台进程合并调节，硬件读写串行进行。
@@ -111,8 +107,8 @@ F1/F2 保持原有行为。若外接键盘在固件层将 F1/F2 转为多媒体�
 `move-window-display.swift` 是窗口跨屏功能的 Swift 版本，启动速度比 AppleScript 版本快。需要先在 macOS 上编译一次：
 
 ```bash
-mkdir -p "$HOME/.local/bin"
-swiftc -O macOS/src/move-window-display.swift -o "$HOME/.local/bin/move-window-display"
+mkdir -p "$HOME/OneDrive/bin"
+swiftc -O macOS/src/move-window-display.swift -o "$HOME/OneDrive/bin/move-window-display"
 ```
 
 如果系统提示找不到 `swiftc`，先安装 Xcode Command Line Tools：
@@ -125,35 +121,35 @@ xcode-select --install
 
 ```bash
 # 移到下一个屏幕（不传参数时也是 next）
-~/.local/bin/move-window-display next
+~/OneDrive/bin/move-window-display next
 
 # 移到上一个屏幕
-~/.local/bin/move-window-display prev
+~/OneDrive/bin/move-window-display prev
 
 # 移到指定屏幕，序号范围为 1 到 9
-~/.local/bin/move-window-display 1
-~/.local/bin/move-window-display 2
+~/OneDrive/bin/move-window-display 1
+~/OneDrive/bin/move-window-display 2
 
 # 切换当前窗口的原生全屏状态
-~/.local/bin/move-window-display fullscreen
+~/OneDrive/bin/move-window-display fullscreen
 
 # 将当前窗口居中，并在当前屏幕 80% 和 50% 两档大小之间切换
-~/.local/bin/move-window-display resize
+~/OneDrive/bin/move-window-display resize
 
 # 查看帮助
-~/.local/bin/move-window-display --help
+~/OneDrive/bin/move-window-display --help
 ```
 
 首次运行前，需要打开 **系统设置 → 隐私与安全性 → 辅助功能**：
 
 - 从终端运行时，允许所使用的终端程序控制电脑；
 - 从 Karabiner-Elements 调用时，允许 `karabiner_grabber` 控制电脑；
-- 如果仍然提示“缺少辅助功能权限”，点击列表下方的 `+`，添加 `~/.local/bin/move-window-display`。
+- 如果仍然提示“缺少辅助功能权限”，点击列表下方的 `+`，添加 `~/OneDrive/bin/move-window-display`。
 
 遇到移动或缩放问题时，可以打开调试日志：
 
 ```bash
-MWD_DEBUG=1 ~/.local/bin/move-window-display next
+MWD_DEBUG=1 ~/OneDrive/bin/move-window-display next
 ```
 
 更新源码后，重新执行编译命令即可覆盖旧版本。
@@ -163,12 +159,12 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 仓库提供的 `Karabiner-Elements.json` 默认调用编译后的 Swift 程序：
 
 ```text
-"$HOME/.local/bin/move-window-display" --background next
-"$HOME/.local/bin/move-window-display" --background prev
-"$HOME/.local/bin/move-window-display" --background resize
-"$HOME/.local/bin/move-window-display" --background 1
-"$HOME/.local/bin/move-window-display" --background 2
-"$HOME/.local/bin/move-window-display" --background 3
+"$HOME/OneDrive/bin/move-window-display" --background next
+"$HOME/OneDrive/bin/move-window-display" --background prev
+"$HOME/OneDrive/bin/move-window-display" --background resize
+"$HOME/OneDrive/bin/move-window-display" --background 1
+"$HOME/OneDrive/bin/move-window-display" --background 2
+"$HOME/OneDrive/bin/move-window-display" --background 3
 ```
 
 导入规则前需要先完成上面的编译安装。更新 Swift 源码后，重新编译即可，无需再次导入规则。
@@ -188,8 +184,8 @@ MWD_DEBUG=1 ~/.local/bin/move-window-display next
 - 已铺满当前屏幕可用区域的窗口，跨屏后会尝试重新铺满目标屏幕；如果应用限制尺寸而无法铺满，只要窗口中心已进入目标屏幕，就保留实际大小，不会移回原屏幕；
 - 最大化按窗口几何尺寸识别。应用自身仅放大到内容大小、没有铺满屏幕的 Zoom 窗口，按普通窗口处理；
 - 只会使用屏幕的可视区域，不会压到菜单栏和 Dock；
-- Karabiner 规则调用 `~/.local/bin/move-window-display`，该文件需要由 Swift 源码预先编译；
-- 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也添加 `~/.local/bin/move-window-display`）；
+- Karabiner 规则调用 `~/OneDrive/bin/move-window-display`，该文件需要由 Swift 源码预先编译；
+- 首次使用需要授权：**系统设置 → 隐私与安全性 → 辅助功能**，打开 `karabiner_grabber`（必要时也添加 `~/OneDrive/bin/move-window-display`）；
 - Swift 版本遇到原生全屏窗口时，会自动退出全屏、移动到目标显示器，然后在目标显示器恢复全屏；如果应用或 macOS 拒绝切换，会响一声提示音。
 - 启动器会记录当时的进程 ID 和窗口 ID；后台接手前焦点已变化则忽略这次按键。若无法取得窗口 ID，会停止操作。接手后始终操作同一窗口，原生全屏退出后的普通窗口位置和尺寸用于失败回滚。
 

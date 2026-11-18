@@ -7,7 +7,7 @@
 //   fullscreen  切换当前窗口的原生全屏状态
 //   resize  在屏幕 80% 和 50% 两档大小之间切换，并保持居中
 //
-// 编译: mkdir -p ~/.local/bin && swiftc -O move-window-display.swift -o ~/.local/bin/move-window-display
+// 编译: mkdir -p ~/OneDrive/bin && swiftc -O move-window-display.swift -o ~/OneDrive/bin/move-window-display
 // 权限: 系统设置 -> 隐私与安全性 -> 辅助功能, 允许 karabiner_grabber (或本程序)
 
 import AppKit

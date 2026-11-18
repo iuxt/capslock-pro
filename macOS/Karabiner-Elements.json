@@ -339,7 +339,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/display-brightness\" --background down"
+                            "shell_command": "\"$HOME/OneDrive/bin/display-brightness\" --background down"
                         }
                     ],
                     "type": "basic"
@@ -368,7 +368,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/display-brightness\" --background up"
+                            "shell_command": "\"$HOME/OneDrive/bin/display-brightness\" --background up"
                         }
                     ],
                     "type": "basic"
@@ -402,7 +402,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/move-window-display\" --background fullscreen"
+                            "shell_command": "\"$HOME/OneDrive/bin/move-window-display\" --background fullscreen"
                         }
                     ],
                     "type": "basic"
@@ -436,7 +436,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/move-window-display\" --background resize"
+                            "shell_command": "\"$HOME/OneDrive/bin/move-window-display\" --background resize"
                         }
                     ],
                     "type": "basic"
@@ -470,7 +470,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/move-window-display\" --background next"
+                            "shell_command": "\"$HOME/OneDrive/bin/move-window-display\" --background next"
                         }
                     ],
                     "type": "basic"
@@ -499,7 +499,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/move-window-display\" --background prev"
+                            "shell_command": "\"$HOME/OneDrive/bin/move-window-display\" --background prev"
                         }
                     ],
                     "type": "basic"
@@ -528,7 +528,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/move-window-display\" --background 1"
+                            "shell_command": "\"$HOME/OneDrive/bin/move-window-display\" --background 1"
                         }
                     ],
                     "type": "basic"
@@ -557,7 +557,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/move-window-display\" --background 2"
+                            "shell_command": "\"$HOME/OneDrive/bin/move-window-display\" --background 2"
                         }
                     ],
                     "type": "basic"
@@ -586,7 +586,7 @@
                             }
                         },
                         {
-                            "shell_command": "\"$HOME/.local/bin/move-window-display\" --background 3"
+                            "shell_command": "\"$HOME/OneDrive/bin/move-window-display\" --background 3"
                         }
                     ],
                     "type": "basic"

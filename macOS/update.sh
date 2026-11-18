@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 rules_source="$script_dir/Karabiner-Elements.json"
 
-bin_dir="${CAPSLOCK_PRO_BIN_DIR:-$HOME/.local/bin}"
+bin_dir="${CAPSLOCK_PRO_BIN_DIR:-$HOME/OneDrive/bin}"
 karabiner_config="${CAPSLOCK_PRO_KARABINER_CONFIG:-$HOME/.config/karabiner/karabiner.json}"
 assets_dir="${CAPSLOCK_PRO_KARABINER_ASSETS_DIR:-$HOME/.config/karabiner/assets/complex_modifications}"
 launch_agents_dir="${CAPSLOCK_PRO_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
